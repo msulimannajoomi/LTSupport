@@ -1,0 +1,96 @@
+C:\Users\suliman\Desktop\faisal project\LTSupport-Platform\backend\app.py:91: DeprecationWarning: 
+        on_event is deprecated, use lifespan event handlers instead.
+
+        Read more about it in the
+        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+        
+  @app.on_event("startup")
+INFO:     Started server process [3972]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+[Relay] Listening on 0.0.0.0:7000
+INFO:     154.192.102.104:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+[Relay] device=TESTING-AE4C3C-A15A356DA5: host connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+[Relay] device=TESTING-AE4C3C-A15A356DA5: viewer connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+INFO:     154.192.102.104:0 - "DELETE /api/devices/TESTING-AE4C3C-A15A356DA5 HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+[Relay] device=TESTING-AE4C3C-A15A356DA5: host connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+INFO:     154.192.102.249:0 - "DELETE /api/devices/TESTING-AE4C3C-A15A356DA5 HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/session/verify-peer HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/session/check HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/session/report HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/session/verify-peer HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/session/check HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/account/upgrade-to-prepaid HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+[Relay] device=TESTING-AE4C3C-A15A356DA5: viewer connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+INFO:     154.192.102.249:0 - "DELETE /api/devices/TESTING-AE4C3C-A15A356DA5 HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "DELETE /api/devices/TESTING-AE4C3C-A15A356DA5 HTTP/1.1" 404 Not Found
+[Relay] device=TESTING-AE4C3C-A15A356DA5: host connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+[Relay] device=TESTING-AE4C3C-A15A356DA5: viewer connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+[Relay] device=TESTING-AE4C3C-A15A356DA5: host connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+INFO:     103.102.159.105:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     103.102.159.105:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     103.102.159.105:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "DELETE /api/devices/TESTING-AE4C3C-A15A356DA5 HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "DELETE /api/devices/TESTING-AE4C3C-A15A356DA5 HTTP/1.1" 404 Not Found
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+[Relay] device=TESTING-AE4C3C-5519089BBB: viewer connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+[Relay] device=TESTING-AE4C3C-5519089BBB: host connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+INFO:     154.192.102.249:0 - "DELETE /api/devices/TESTING-AE4C3C-5519089BBB HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     103.102.159.105:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     103.102.159.105:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     103.102.159.105:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+[Relay] device=TESTING-AE4C3C-5519089BBB: viewer connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+INFO:     154.192.102.249:0 - "DELETE /api/devices/TESTING-AE4C3C-5519089BBB HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+[Relay] device=TESTING-AE4C3C-5519089BBB: host connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+INFO:     154.192.102.249:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.249:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     103.102.159.105:0 - "POST /api/login HTTP/1.1" 401 Unauthorized
+INFO:     103.102.159.105:0 - "POST /api/login HTTP/1.1" 401 Unauthorized
+INFO:     103.102.159.105:0 - "POST /api/login HTTP/1.1" 401 Unauthorized

@@ -1,8 +1,0 @@
-opencv-python
-numpy
-Pillow
-pyautogui
-pynput
-pystray
-miniupnpc
-pyngrok

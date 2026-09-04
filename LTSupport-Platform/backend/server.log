@@ -1,0 +1,81 @@
+C:\Users\suliman\Desktop\faisal project\LTSupport-Platform\backend\app.py:91: DeprecationWarning: 
+        on_event is deprecated, use lifespan event handlers instead.
+
+        Read more about it in the
+        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+        
+  @app.on_event("startup")
+INFO:     Started server process [28992]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+[Startup] Could not reach the database to set up indexes: SSL handshake failed: ac-p613lc8-shard-00-02.9qfpqde.mongodb.net:27017: [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1082) (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms),SSL handshake failed: ac-p613lc8-shard-00-01.9qfpqde.mongodb.net:27017: [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1082) (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms),SSL handshake failed: ac-p613lc8-shard-00-00.9qfpqde.mongodb.net:27017: [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1082) (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms), Timeout: 5.0s, Topology Description: <TopologyDescription id: 6a98de0aaec6ba957b27699f, topology_type: ReplicaSetNoPrimary, servers: [<ServerDescription ('ac-p613lc8-shard-00-00.9qfpqde.mongodb.net', 27017) server_type: Unknown, rtt: None, error=AutoReconnect('SSL handshake failed: ac-p613lc8-shard-00-00.9qfpqde.mongodb.net:27017: [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1082) (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, <ServerDescription ('ac-p613lc8-shard-00-01.9qfpqde.mongodb.net', 27017) server_type: Unknown, rtt: None, error=AutoReconnect('SSL handshake failed: ac-p613lc8-shard-00-01.9qfpqde.mongodb.net:27017: [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1082) (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>, <ServerDescription ('ac-p613lc8-shard-00-02.9qfpqde.mongodb.net', 27017) server_type: Unknown, rtt: None, error=AutoReconnect('SSL handshake failed: ac-p613lc8-shard-00-02.9qfpqde.mongodb.net:27017: [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1082) (configured timeouts: socketTimeoutMS: 5000.0ms, connectTimeoutMS: 5000.0ms)')>]>
+[Startup] Starting anyway -- requests needing the database will fail until it's reachable, but the server itself is up.
+[Relay] Listening on 0.0.0.0:7000
+INFO:     127.0.0.1:63151 - "GET /api/devices HTTP/1.1" 503 Service Unavailable
+INFO:     37.111.169.160:0 - "POST /api/login HTTP/1.1" 503 Service Unavailable
+INFO:     37.111.169.160:0 - "POST /api/login HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60857 - "GET /api/devices HTTP/1.1" 503 Service Unavailable
+INFO:     37.111.169.160:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     37.111.169.160:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     37.111.169.160:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     37.111.169.160:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     37.111.169.160:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50272 - "GET /api/devices HTTP/1.1" 401 Unauthorized
+INFO:     37.111.169.160:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64287 - "POST /api/signup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64288 - "POST /api/login HTTP/1.1" 200 OK
+[Relay] device=RECOVERYTE-DE5CB8-7D2ECF224C: host connection ended: ConnectionResetError: [WinError 64] The specified network name is no longer available
+INFO:     37.111.169.160:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55693 - "POST /api/signup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55701 - "POST /api/signup HTTP/1.1" 200 OK
+[Relay] device=LOCAL-hp: host connection ended: IncompleteReadError: 24719 bytes read on a total of 32143 expected bytes
+INFO:     127.0.0.1:55707 - "POST /api/signup HTTP/1.1" 200 OK
+[Relay] device=RECOVERYTE-D91B14-A8C2183E8B: host connection ended: ConnectionResetError: [WinError 64] The specified network name is no longer available
+INFO:     127.0.0.1:50721 - "POST /api/signup HTTP/1.1" 200 OK
+INFO:     37.111.169.160:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     37.111.169.160:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     37.111.169.160:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52779 - "POST /api/signup HTTP/1.1" 200 OK
+[Relay] device=RECOVERYTE-1530F0-1946BA90E5: viewer connection ended: ConnectionResetError: [WinError 64] The specified network name is no longer available
+[Relay] device=RECOVERYTE-1530F0-1946BA90E5: host connection ended: ConnectionResetError: [WinError 64] The specified network name is no longer available
+INFO:     37.111.169.160:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     37.111.169.160:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     37.111.169.160:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     37.111.169.160:0 - "GET /api/devices HTTP/1.1" 200 OK
+[Relay] device=LOCAL-hp: host connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+[Relay] device=LOCAL-hp: viewer connection ended: ConnectionResetError: Connection lost
+INFO:     127.0.0.1:53506 - "POST /api/signup HTTP/1.1" 200 OK
+[Relay] device=REALISTICT-006F17-795C891AD2: viewer connection ended: ConnectionResetError: [WinError 10054] An existing connection was forcibly closed by the remote host
+[Relay] device=REALISTICT-006F17-795C891AD2: host connection ended: ConnectionResetError: [WinError 10054] An existing connection was forcibly closed by the remote host
+INFO:     154.192.102.104:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/me HTTP/1.1" 200 OK
+[Relay] device=LOCAL-hp: host connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+[Relay] device=LOCAL-hp: viewer connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+INFO:     154.192.102.104:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/me HTTP/1.1" 200 OK
+[Relay] device=TESTING-AE4C3C-A15A356DA5: host connection ended: IncompleteReadError: 0 bytes read on a total of 5 expected bytes
+INFO:     154.192.102.104:0 - "POST /api/login HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/me HTTP/1.1" 200 OK
+INFO:     154.192.102.104:0 - "GET /api/devices HTTP/1.1" 200 OK
