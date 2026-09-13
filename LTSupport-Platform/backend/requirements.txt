@@ -3,3 +3,5 @@ uvicorn[standard]
 bcrypt
 pydantic
 pymongo
+requests
+python-multipart

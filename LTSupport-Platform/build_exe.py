@@ -21,8 +21,8 @@ def build():
 
     # --onefile: bundle everything into one .exe
     # --windowed: no console window (this is a GUI app)
-    # --collect-all: customtkinter/pystray/pynput pick their backend dynamically,
-    #                so a plain import scan misses files PyInstaller needs to bundle
+    # --collect-all: customtkinter/pynput pick their backend dynamically, so a plain
+    #                import scan misses files PyInstaller needs to bundle
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
@@ -31,7 +31,6 @@ def build():
         f"--icon={icon_ico}",
         "--name=LTSupport",
         "--collect-all=customtkinter",
-        "--collect-all=pystray",
         "--collect-all=pynput",
         f"--add-data={icon_ico};.",
         f"--add-data={icon_png};.",

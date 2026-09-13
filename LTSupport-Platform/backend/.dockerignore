@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.log
+ltsupport.db
+.git/
+.env
+.env.example

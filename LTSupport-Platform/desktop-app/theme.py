@@ -1,22 +1,25 @@
 import customtkinter as ctk
 
-BG = "#0f172a"
-CARD = "#1e293b"
-CARD_HOVER = "#243244"
-ACCENT = "#38bdf8"
-ACCENT_HOVER = "#0ea5e9"
-SUCCESS = "#4ade80"
-WARNING = "#fbbf24"
-DANGER = "#f87171"
-TEXT = "#f8fafc"
-TEXT_MUTED = "#94a3b8"
-BORDER = "#334155"
+BG = "#FAF6EC"
+CARD = "#FFFFFF"
+CARD_HOVER = "#FBF3DC"
+ACCENT = "#EAB308"
+ACCENT_HOVER = "#CA8A04"
+SUCCESS = "#22C55E"
+SUCCESS_HOVER = "#16A34A"
+WARNING = "#FB923C"
+WARNING_HOVER = "#EA7C1C"
+DANGER = "#DC2626"
+DANGER_HOVER = "#B91C1C"
+TEXT = "#1F2937"
+TEXT_MUTED = "#78716C"
+BORDER = "#EDE4CC"
 
 FONT = "Segoe UI"
 
 
 def apply():
-    ctk.set_appearance_mode("dark")
+    ctk.set_appearance_mode("light")
     ctk.set_default_color_theme("blue")
 
 

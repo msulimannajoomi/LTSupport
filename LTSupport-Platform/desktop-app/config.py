@@ -1,7 +1,7 @@
 # Point these at your deployed server's public IP/domain before distributing to clients.
-API_BASE_URL = "https://9ntmvzk7-8000.inc1.devtunnels.ms"
-RELAY_HOST = "0.tcp.in.ngrok.io"
-RELAY_PORT = 25454
+API_BASE_URL = "http://136.116.38.224:8000"
+RELAY_HOST = "136.116.38.224"
+RELAY_PORT = 7000
 
 # Host mic -> viewer speaker. Raw PCM16 mono, no compression -- both sides must agree
 # on this format since audio frames carry no header of their own.

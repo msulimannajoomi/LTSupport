@@ -42,9 +42,9 @@ class SignupView(ctk.CTkFrame):
         self.confirm_entry.pack(pady=(4, 12))
         self.confirm_entry.bind("<Return>", lambda e: self.submit())
 
-        ctk.CTkLabel(inner, text="Every new account starts on a free Trial plan (2-minute "
-                                  "sessions). You can upgrade to Prepaid anytime from Billing "
-                                  "inside the app.",
+        ctk.CTkLabel(inner, text="Every new account starts on a free Trial plan (10-minute "
+                                  "sessions, 3 per day). You can upgrade to Prepaid anytime from "
+                                  "Billing inside the app.",
                      font=theme.small(), text_color=theme.TEXT_MUTED, wraplength=340,
                      justify="left").pack(anchor="w", pady=(0, 8))
 
@@ -53,7 +53,7 @@ class SignupView(ctk.CTkFrame):
         self.error_label.pack(anchor="w", pady=(0, 8))
 
         self.submit_btn = ctk.CTkButton(inner, text="Create Account", width=340, height=42, corner_radius=8,
-                                         fg_color=theme.SUCCESS, hover_color="#22c55e",
+                                         fg_color=theme.SUCCESS, hover_color=theme.SUCCESS_HOVER,
                                          text_color="#0f172a", font=theme.h3(), command=self.submit)
         self.submit_btn.pack(pady=(12, 20))
 
@@ -110,5 +110,10 @@ class SignupView(ctk.CTkFrame):
         self.app.show_dashboard()
 
     def _fail(self, message):
+        # Reached via self.after() from a background thread (_do_signup) -- the user
+        # can click "back to login" (destroying this view) while a signup attempt is
+        # still in flight.
+        if not self.winfo_exists():
+            return
         self.error_label.configure(text=message)
         self.submit_btn.configure(state="normal", text="Create Account")

@@ -31,17 +31,22 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def issue_session(user_id: int) -> str:
+def issue_session(user_id: int, member_id: str = None) -> str:
     token = secrets.token_hex(32)
     expires_at = (
         datetime.datetime.utcnow() + datetime.timedelta(hours=config.SESSION_TTL_HOURS)
     ).isoformat()
-    db.create_session(token, user_id, expires_at)
+    db.create_session(token, user_id, expires_at, member_id=member_id)
     return token
 
 
 def resolve_session(token: str):
-    """Returns the owning user dict for a valid, non-expired session token, else None."""
+    """Returns the owning user dict for a valid, non-expired session token, else None.
+    Every existing field (org_id, account_type, balance_rupees, blocked, etc.) always
+    comes from the org's own record, exactly as before RBAC existed -- a member session
+    just gets a "role" key layered on top (see db.py's org_members section), which no
+    pre-existing code reads or is affected by. A plain org login (not tied to any
+    member) is always role="admin"."""
     if not token:
         return None
 
@@ -59,7 +64,22 @@ def resolve_session(token: str):
         db.delete_session(token)
         return None
 
-    user = db.get_user_by_id(session["user_id"])
-    if user:
-        _session_cache[token] = (user, time.time())
+    org = db.get_user_by_id(session["user_id"])
+    if not org:
+        return None
+
+    member_id = session.get("member_id")
+    if member_id:
+        member = db.get_org_member(member_id)
+        if not member or not member.get("active", True):
+            return None  # removed/deactivated since the session was issued
+        user = dict(org)
+        user["role"] = member["role"]
+        user["member_id"] = member["member_id"]
+        user["member_username"] = member["username"]
+    else:
+        user = dict(org)
+        user["role"] = "admin"
+
+    _session_cache[token] = (user, time.time())
     return user

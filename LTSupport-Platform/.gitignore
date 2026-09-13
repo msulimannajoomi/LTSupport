@@ -1,0 +1,15 @@
+# Secrets -- never committed, transferred to servers separately
+.env
+backend/.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs and local dev artifacts
+*.log
+backend/ltsupport.db
+
+# PyInstaller build output
+build/
+dist/

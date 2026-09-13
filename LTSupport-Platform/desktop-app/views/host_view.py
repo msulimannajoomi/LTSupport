@@ -3,7 +3,6 @@ import customtkinter as ctk
 
 import theme
 from host_agent import HostAgent
-from tray import TrayIcon
 
 
 class HostView(ctk.CTkFrame):
@@ -11,7 +10,6 @@ class HostView(ctk.CTkFrame):
         super().__init__(parent, fg_color=theme.BG)
         self.app = app
         self.agent = None
-        self.tray = None
         self._viewer_was_connected = False
         self._shutdown = False
 
@@ -82,13 +80,15 @@ class HostView(ctk.CTkFrame):
                      justify="left").pack(anchor="w", pady=(0, 16))
 
         self.toggle_btn = ctk.CTkButton(inner, text="Start Hosting", height=44, corner_radius=8,
-                                         fg_color=theme.SUCCESS, hover_color="#22c55e", text_color="#0f172a",
+                                         fg_color=theme.SUCCESS, hover_color=theme.SUCCESS_HOVER, text_color="#0f172a",
                                          font=theme.h3(), command=self.toggle)
         self.toggle_btn.pack(fill="x")
 
-        ctk.CTkLabel(inner, text="Once a viewer connects, this window hides to the system tray, "
-                                  "your microphone becomes live for the call, and the whole session "
-                                  "is recorded. The app closes automatically when they disconnect.",
+        ctk.CTkLabel(inner, text="Once a viewer connects, this window disappears completely -- no "
+                                  "taskbar entry, no tray icon -- your microphone becomes live for the "
+                                  "call, and the whole session is recorded. If they disconnect, this "
+                                  "device stays online waiting for the next viewer, still hidden. "
+                                  "Ending the session is up to whoever's connected from there on.",
                      font=theme.small(), text_color=theme.TEXT_MUTED, wraplength=360,
                      justify="left").pack(anchor="w", pady=(16, 0))
 
@@ -97,7 +97,7 @@ class HostView(ctk.CTkFrame):
         self.clipboard_clear()
         self.clipboard_append(device_id)
         self.copy_id_btn.configure(text="Copied!")
-        self.after(1200, lambda: self.copy_id_btn.configure(text="📋 Copy"))
+        self.after(1200, lambda: self.copy_id_btn.configure(text="📋 Copy") if self.winfo_exists() else None)
 
     def _back(self):
         if self.agent:
@@ -124,15 +124,12 @@ class HostView(ctk.CTkFrame):
         if self.agent:
             self.agent.stop()
         self.agent = None
-        if self.tray:
-            self.tray.stop()
-            self.tray = None
         if self.app.state() == "withdrawn":
             self.app.deiconify()
             self.app.lift()
         self.status_dot.configure(text_color=theme.TEXT_MUTED)
         self.status_label.configure(text="Not hosting")
-        self.toggle_btn.configure(state="normal", text="Start Hosting", fg_color=theme.SUCCESS, hover_color="#22c55e")
+        self.toggle_btn.configure(state="normal", text="Start Hosting", fg_color=theme.SUCCESS, hover_color=theme.SUCCESS_HOVER)
         self.local_mode_check.configure(state="normal")
         self.session_type_selector.configure(state="normal")
         self.copy_id_btn.configure(state="disabled")
@@ -142,6 +139,12 @@ class HostView(ctk.CTkFrame):
         self.after(0, lambda: self._apply_status(status, info))
 
     def _apply_status(self, status, info):
+        # Reached via self.after() from a background thread (HostAgent's on_status) --
+        # _back() stops the agent and navigates to the Dashboard (destroying this view,
+        # see main.py's _swap) without itself setting _shutdown, so a status that was
+        # already in flight can still arrive after this view no longer exists.
+        if not self.winfo_exists():
+            return
         if self._shutdown:
             return  # a shutdown is already underway (or done) -- show nothing else, ever
         if status == "online":
@@ -165,12 +168,12 @@ class HostView(ctk.CTkFrame):
                 self.instructions_label.configure(
                     text=f"To connect: on the other computer, open LTSupport, log in, go to the "
                          f"Dashboard, and under \"Join a Device\" paste this ID: {device_id}")
-            self.toggle_btn.configure(state="normal", text="Stop Hosting", fg_color=theme.DANGER, hover_color="#ef4444")
+            self.toggle_btn.configure(state="normal", text="Stop Hosting", fg_color=theme.DANGER, hover_color=theme.DANGER_HOVER)
             self.agent.launch_overlay(self.app)
         elif status == "reconnecting":
             self.status_dot.configure(text_color=theme.WARNING)
             self.status_label.configure(
-                text=f"Connection dropped -- reconnecting (attempt {info['attempt']}/{info['max_attempts']})…")
+                text=f"Connection dropped -- reconnecting (attempt {info['attempt']})…")
         elif status == "resumed":
             self.status_dot.configure(text_color=theme.SUCCESS)
             mode_label = " — Interview Mode" if self.agent._session_type == "interview" else ""
@@ -181,9 +184,9 @@ class HostView(ctk.CTkFrame):
             self.status_label.configure(text="Viewer connected — mic live, recording")
             self._hide_to_tray()
         elif status == "viewer_left":
-            self._full_shutdown()
+            self._session_ended_idle()
         elif status == "trial_limit":
-            self._full_shutdown()
+            self._session_ended_idle()
         elif status == "error":
             self.status_dot.configure(text_color=theme.DANGER)
             self.status_label.configure(text=info.get("message", "Error"))
@@ -192,48 +195,54 @@ class HostView(ctk.CTkFrame):
             self.session_type_selector.configure(state="normal")
             self.agent = None
         elif status == "offline":
-            # Fires at the end of every hosting attempt, for any reason -- including
-            # after viewer_left/trial_limit already handled it (both set _shutdown=True
-            # via _full_shutdown, so the guard above already returned before reaching
-            # here in that case). Only route here for real: manually stopping before any
-            # viewer ever connected (window stays open, ready to host again) vs. a
-            # connection that was live and then unexpectedly dropped (full silent exit,
-            # matching viewer_left/trial_limit -- never re-show the window for this).
+            # Fires at the end of every hosting attempt, for any reason. A viewer's
+            # session ending on its own (viewer_left/trial_limit) no longer reaches here
+            # at all -- see _session_ended_idle and host_agent.py's _recv_loop/_run_relay,
+            # which keep the run going and waiting for the next viewer instead. Getting
+            # here now means either this host's own Stop Hosting was clicked, or a
+            # genuine protocol error ended the run outright.
             if self._viewer_was_connected:
                 self._full_shutdown()
             else:
                 self._stop()
 
+    def _session_ended_idle(self):
+        """A viewer's session ended on its own -- they disconnected, or hit their plan's
+        time/balance limit. That no longer ends hosting outright: host_agent.py keeps
+        this device registered and waiting underneath (see _recv_loop/_run_relay), ready
+        for the same or a different viewer to connect again -- and this side stays
+        exactly as invisible as it was while that viewer was connected: no window, no
+        tray icon, nothing in the taskbar. By design there is now no way to bring this
+        window back manually once hidden (see _hide_to_tray) -- only this host's own
+        Stop Hosting ends things, and that can only be triggered from the connected
+        viewer's side (Terminate Connection) or by the whole app process ending. Still
+        update the status text even though it's hidden, so it's correct on the rare
+        chance anything here ever becomes visible again."""
+        self.status_dot.configure(text_color=theme.SUCCESS)
+        mode_label = " — Interview Mode" if self.agent and self.agent._session_type == "interview" else ""
+        self.status_label.configure(text=f"Hosting — waiting for a viewer{mode_label}")
+
     def _hide_to_tray(self):
-        if self.tray is None:
-            self.tray = TrayIcon(
-                on_show=lambda: self.app.after(0, self._restore_from_tray),
-                on_stop=lambda: self.app.after(0, self._tray_stop_clicked),
-            )
-            device_id = self.agent.device_id if self.agent else ""
-            self.tray.start(f"LTSupport — Live: screen, mic & recording ({device_id})")
+        # No tray icon at all -- not even one tucked into "Show hidden icons". A
+        # visible-but-tucked-away icon still shows up there, which is exactly what
+        # this avoids: the window just withdraws with nothing left in the shell
+        # notification area to find. That also means there is no click-to-restore or
+        # click-to-stop-hosting from this side anymore for the rest of this run --
+        # deliberate, not an oversight (see _session_ended_idle).
         self.app.withdraw()
 
-    def _restore_from_tray(self):
-        self.app.deiconify()
-        self.app.lift()
-
-    def _tray_stop_clicked(self):
-        self._restore_from_tray()
-        self._stop()
-
     def _full_shutdown(self):
-        """A viewer disconnected while this host was running hidden in the background.
-        Per the one-shot-session model, the whole app exits rather than waiting idle --
-        silently, with no dialog, tray notice, or any other visible sign on this side.
-        _shutdown latches immediately so nothing later (a stray status update racing in
-        from the network thread) can un-hide the window or show anything, even briefly."""
+        """Reached only via the "offline" status once a viewer has connected at some
+        point this run (see _apply_status) -- either this host's own Stop Hosting was
+        clicked, or a genuine protocol error ended the run outright (an ordinary viewer
+        disconnect no longer reaches here at all, see _session_ended_idle). The whole
+        app exits rather than returning to the idle Host screen -- silently, with no
+        dialog, tray notice, or any other visible sign on this side. _shutdown latches
+        immediately so nothing later (a stray status update racing in from the network
+        thread) can un-hide the window or show anything, even briefly."""
         if self._shutdown:
             return
         self._shutdown = True
         if self.agent:
             self.agent.stop()
-        if self.tray:
-            self.tray.stop()
-            self.tray = None
         self.app.destroy()

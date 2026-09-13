@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import secrets
 import struct
 import time
@@ -8,6 +9,10 @@ import auth
 import config
 import plan
 import protocol as p
+
+
+def _iso(ts):
+    return datetime.datetime.utcfromtimestamp(ts).isoformat()
 
 HELLO_TIMEOUT = 15
 # Seconds without any frame (including heartbeats) before a connection is considered
@@ -36,8 +41,17 @@ class HostConn:
         self.name = name
         self.machine_id = machine_id  # this host's own machine id, to refuse a same-machine viewer
         self.session_type = session_type  # chosen by the HOST at Start Hosting -- the viewer has no say
-        self.viewer = None  # ViewerConn or None
+        self.viewer = None  # ViewerConn or None -- the single "normal"-role support session, unchanged
         self.grace = None  # dict describing a just-dropped viewer's still-resumable session, or None
+        # RBAC: any number of non-"normal"-role (currently just "admin") observers can
+        # watch this host's live screen at once, entirely independent of self.viewer --
+        # see _handle_observer. Never gated by billing/session limits, never occupies
+        # the viewer slot, never affects it either way.
+        self.observers = []  # list of ViewerConn
+        # Wall-clock time the CURRENT self.viewer connected (kept in sync with it --
+        # set together, cleared together), so an admin can be told "this session's
+        # been live since <time>" without needing to ask the viewer itself.
+        self.viewer_connected_at = None
 
 
 class ViewerConn:
@@ -90,6 +104,14 @@ async def handle_connection(reader, writer):
 
 
 async def _handle_host(reader, writer, user, data):
+    # RBAC: only a "normal"-role login can host -- the org's own original ("admin")
+    # login is deliberately restricted to oversight (see _handle_observer) and can
+    # never host or take control itself, same as any other non-"normal" role.
+    if user.get("role") != "normal":
+        await _send_error(writer, "ROLE_FORBIDDEN", "Only a normal-role account can host.")
+        writer.close()
+        return
+
     device_id = (data.get("device_id") or "").strip()
     device_name = (data.get("device_name") or "Unnamed PC").strip()
     session_type = data.get("session_type")
@@ -131,6 +153,21 @@ async def _handle_host(reader, writer, user, data):
                 continue
             if conn.viewer is not None:
                 await _send(conn.viewer.writer, msg_type, payload)
+            # Fan out to every observer independent of conn.viewer -- an admin can be
+            # watching whether or not a "normal" support session is currently live.
+            # Fire-and-forget: observers never ack, so this can never affect the
+            # host's own flow-control window (see host_agent.py), only ever add a
+            # send per observer per frame. A send failure just drops that one
+            # observer, same as _handle_observer's own loop ending would.
+            if conn.observers and msg_type in (p.TYPE_SCREEN_FRAME, p.TYPE_AUDIO_FRAME):
+                for obs in list(conn.observers):
+                    try:
+                        await _send(obs.writer, msg_type, payload)
+                    except Exception:
+                        try:
+                            conn.observers.remove(obs)
+                        except ValueError:
+                            pass
     except asyncio.TimeoutError:
         print(f"[Relay] device={device_id}: host connection idle-timed-out after {IDLE_TIMEOUT}s")
     except (asyncio.IncompleteReadError, ConnectionResetError, ConnectionAbortedError, OSError) as e:
@@ -150,6 +187,15 @@ async def _handle_host(reader, writer, user, data):
                 conn.viewer.writer.close()
             except Exception:
                 pass
+        for obs in list(conn.observers):
+            try:
+                await _send(obs.writer, p.TYPE_SESSION_END, {"reason": "host_disconnected"})
+            except Exception:
+                pass
+            try:
+                obs.writer.close()
+            except Exception:
+                pass
         try:
             writer.close()
         except Exception:
@@ -160,7 +206,10 @@ async def _viewer_forward_loop(reader, host_conn):
     """Runs until the viewer's connection ends, for any reason -- including exceptions,
     which are caught and logged here (rather than left to surface as an untracked task
     exception) so a session ending unexpectedly is diagnosable from the server log
-    instead of just looking like an ordinary disconnect."""
+    instead of just looking like an ordinary disconnect. Only ever used for the
+    single "normal"-role viewer slot (host_conn.viewer) -- any other role is routed to
+    _handle_observer instead (see _handle_viewer), which never forwards anything
+    upstream at all, so there's no role-based filtering needed here any more."""
     try:
         while True:
             msg_type, payload = await asyncio.wait_for(_read_frame(reader), timeout=IDLE_TIMEOUT)
@@ -174,7 +223,49 @@ async def _viewer_forward_loop(reader, host_conn):
         print(f"[Relay] device={host_conn.device_id}: viewer connection ended: {type(e).__name__}: {e}")
 
 
-async def _expire_grace(host_conn, org_id, session_type, session_started):
+async def _handle_observer(reader, writer, user, host_conn):
+    """A non-"normal" role (currently just "admin") watching a host's live screen --
+    entirely separate from the primary "normal"-role viewer slot (host_conn.viewer).
+    No billing, session-limit, or grace-period logic applies here: this isn't a
+    billable support session, just oversight, and it works identically whether or not
+    a real "normal" viewer is currently connected (see the fan-out in _handle_host,
+    which sends every frame to host_conn.observers independent of host_conn.viewer).
+    Disconnecting -- for any reason -- has zero effect on anything else: it's simply
+    removed from the list, exactly like it never affected host_conn.viewer by joining
+    in the first place."""
+    observer = ViewerConn(writer, user["id"], host_conn.device_id)
+    host_conn.observers.append(observer)
+    live_since = _iso(host_conn.viewer_connected_at) if host_conn.viewer_connected_at else None
+    try:
+        await _send(writer, p.TYPE_HELLO_OK, {
+            "device_id": host_conn.device_id, "device_name": host_conn.name,
+            "session_type": host_conn.session_type, "account_type": user["account_type"],
+            "limit_seconds": None, "observer": True, "live_since": live_since,
+        })
+        while True:
+            msg_type, payload = await asyncio.wait_for(_read_frame(reader), timeout=IDLE_TIMEOUT)
+            # Nothing an observer sends is ever forwarded to the host, not even
+            # FRAME_ACK -- observers were never part of the host's flow-control
+            # window to begin with (see the fan-out in _handle_host), so there's
+            # nothing here that needs a reply either way. This loop only exists to
+            # detect the connection ending (or an explicit heartbeat keeping it
+            # alive past IDLE_TIMEOUT).
+    except asyncio.TimeoutError:
+        pass
+    except (asyncio.IncompleteReadError, ConnectionResetError, ConnectionAbortedError, OSError):
+        pass
+    finally:
+        try:
+            host_conn.observers.remove(observer)
+        except ValueError:
+            pass
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+
+async def _expire_grace(host_conn, org_id, session_type, session_started, account_type, member_username):
     """Runs for GRACE_SECONDS after a viewer's connection drops. If nothing cancels it
     first (a reconnect claiming the slot -- see _handle_viewer), the session is really
     over: record usage and tell the host the viewer left, same as an immediate drop used
@@ -187,11 +278,25 @@ async def _expire_grace(host_conn, org_id, session_type, session_started):
     if host_conn.grace is None or host_conn.grace["session_started"] != session_started:
         return
     host_conn.grace = None
-    elapsed_minutes = (time.time() - session_started) / 60
+    # Only clear this once the session is genuinely over -- not the moment the grace
+    # window merely starts (see _handle_viewer), since a resuming viewer within the
+    # window reuses this exact session_started and would just look like nothing ever
+    # happened to anything watching it, correctly.
+    if host_conn.viewer_connected_at == session_started:
+        host_conn.viewer_connected_at = None
+    ended_at = time.time()
+    elapsed_minutes = (ended_at - session_started) / 60
+    billed_minutes, amount_charged = 0.0, 0.0
     if session_type == "interview":
         await asyncio.to_thread(db.record_interview_usage, org_id, elapsed_minutes)
     else:
-        await asyncio.to_thread(db.record_session_usage, org_id, elapsed_minutes)
+        billed_minutes, amount_charged = await asyncio.to_thread(
+            db.record_session_usage, org_id, elapsed_minutes,
+            config.PREPAID_FREE_MINUTES_PER_SESSION, config.PREPAID_RATE_PER_HOUR)
+    await asyncio.to_thread(
+        db.log_session, org_id, host_conn.device_id, session_type, account_type,
+        _iso(session_started), _iso(ended_at), elapsed_minutes, billed_minutes, amount_charged,
+        "viewer_disconnected", member_username=member_username)
     try:
         await _send(host_conn.writer, p.TYPE_SESSION_END, {"reason": "viewer_disconnected"})
     except Exception:
@@ -218,6 +323,14 @@ async def _handle_viewer(reader, writer, user, data):
         writer.close()
         return
 
+    # RBAC: any role other than "normal" (currently just "admin") never touches the
+    # single viewer slot below at all -- it's an independent observer instead (see
+    # _handle_observer), which can watch whether or not a "normal" session is
+    # currently live, and never disturbs one either way.
+    if user.get("role") != "normal":
+        await _handle_observer(reader, writer, user, host_conn)
+        return
+
     # A reconnect from the same owner, arriving inside the grace window left by that
     # owner's own previous viewer connection dropping, resumes the same session instead
     # of being treated as a brand new one -- the host is never told anything happened.
@@ -230,10 +343,18 @@ async def _handle_viewer(reader, writer, user, data):
         session_type = grace["session_type"]
         session_started = grace["session_started"]
         limit_seconds = grace["limit_seconds"]
+        account_type = grace["account_type"]
+        member_username = grace["member_username"]
     else:
         # The session type is whatever the HOST chose when it started hosting -- a viewer
         # never gets to request or override it.
         session_type = host_conn.session_type
+        account_type = user["account_type"]
+        # Only a "normal"-role login ever reaches here (see the role check above), and
+        # a "normal" role only ever comes from a team-member login, so this is always
+        # set -- identifies WHICH team member actually did this session's support work,
+        # for the admin's activity log (see db.log_session/list_session_logs).
+        member_username = user.get("member_username")
 
         if host_conn.viewer is not None:
             await _send_error(writer, "DEVICE_BUSY", "Someone is already connected to that device.")
@@ -248,18 +369,40 @@ async def _handle_viewer(reader, writer, user, data):
             writer.close()
             return
 
-        if not plan.session_allowed(user, session_type):
-            await _send_error(writer, "INSUFFICIENT_BALANCE", plan.insufficient_balance_message(config.UPGRADE_CONTACT_NUMBER))
+        # Only a trial account's daily session count actually gates anything here (see
+        # plan.session_allowed) -- skip the lookup otherwise to avoid a needless query
+        # on every prepaid/postpaid/interview connection.
+        sessions_today = 0
+        if session_type == "normal" and account_type == "trial":
+            sessions_today = await asyncio.to_thread(db.count_sessions_today, user["org_id"])
+
+        if not plan.session_allowed(user, session_type, sessions_today=sessions_today,
+                                     trial_max_sessions_per_day=config.TRIAL_MAX_SESSIONS_PER_DAY):
+            # user.get("blocked") was already handled above, so the only way this can
+            # still be False here is a trial account out of sessions for today.
+            await _send_error(writer, "TRIAL_SESSIONS_EXHAUSTED",
+                               plan.trial_sessions_exhausted_message(config.TRIAL_MAX_SESSIONS_PER_DAY))
             writer.close()
             return
 
         session_started = time.time()
-        limit_seconds = plan.session_limit_seconds(user, config.TRIAL_SESSION_LIMIT_SECONDS, session_type)
+        limit_seconds = plan.session_limit_seconds(
+            user, config.TRIAL_SESSION_LIMIT_SECONDS, session_type,
+            prepaid_free_minutes=config.PREPAID_FREE_MINUTES_PER_SESSION,
+            prepaid_rate_per_hour=config.PREPAID_RATE_PER_HOUR)
 
     viewer = ViewerConn(writer, user["id"], device_id)
     host_conn.viewer = viewer
+    # Kept in sync with host_conn.viewer itself (set together, cleared together) --
+    # session_started is already correct either way: the original connect time when
+    # resuming, or a fresh one for a genuinely new session. Lets an observer be told
+    # "this session has been live since <time>" without asking the viewer at all.
+    host_conn.viewer_connected_at = session_started
 
-    await _send(writer, p.TYPE_HELLO_OK, {"device_id": device_id, "device_name": host_conn.name, "session_type": session_type})
+    await _send(writer, p.TYPE_HELLO_OK, {
+        "device_id": device_id, "device_name": host_conn.name, "session_type": session_type,
+        "account_type": account_type, "limit_seconds": limit_seconds,
+    })
     if not resuming:
         await _send(host_conn.writer, p.TYPE_VIEWER_JOINED, {"session_type": session_type})
 
@@ -284,11 +427,20 @@ async def _handle_viewer(reader, writer, user, data):
     if plan_limit_hit:
         if host_conn.viewer is viewer:
             host_conn.viewer = None
-        elapsed_minutes = (time.time() - session_started) / 60
+            host_conn.viewer_connected_at = None
+        ended_at = time.time()
+        elapsed_minutes = (ended_at - session_started) / 60
+        billed_minutes, amount_charged = 0.0, 0.0
         if session_type == "interview":
             await asyncio.to_thread(db.record_interview_usage, user["org_id"], elapsed_minutes)
         else:
-            await asyncio.to_thread(db.record_session_usage, user["org_id"], elapsed_minutes)
+            billed_minutes, amount_charged = await asyncio.to_thread(
+                db.record_session_usage, user["org_id"], elapsed_minutes,
+                config.PREPAID_FREE_MINUTES_PER_SESSION, config.PREPAID_RATE_PER_HOUR)
+        await asyncio.to_thread(
+            db.log_session, user["org_id"], device_id, session_type, account_type,
+            _iso(session_started), _iso(ended_at), elapsed_minutes, billed_minutes, amount_charged,
+            "plan_limit_reached", member_username=member_username)
         message = {
             "code": "PLAN_LIMIT_REACHED",
             "message": plan.limit_reached_message(user, config.TRIAL_SESSION_LIMIT_SECONDS, config.UPGRADE_CONTACT_NUMBER),
@@ -311,9 +463,11 @@ async def _handle_viewer(reader, writer, user, data):
             "session_type": session_type,
             "session_started": session_started,
             "limit_seconds": limit_seconds,
+            "account_type": account_type,
+            "member_username": member_username,
         }
         host_conn.grace["expire_task"] = asyncio.create_task(
-            _expire_grace(host_conn, user["org_id"], session_type, session_started))
+            _expire_grace(host_conn, user["org_id"], session_type, session_started, account_type, member_username))
 
     try:
         writer.close()

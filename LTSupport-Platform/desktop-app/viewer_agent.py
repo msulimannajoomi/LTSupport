@@ -2,6 +2,7 @@ import socket
 import threading
 import time
 import io
+import select
 
 from PIL import Image
 
@@ -13,9 +14,16 @@ import device_store
 HEARTBEAT_INTERVAL = 8  # seconds -- must stay well under the relay's IDLE_TIMEOUT (30s)
 # Delays between reconnect attempts after an unexpected drop, in the relay-hosted case
 # only (a LAN host only ever accepts one viewer -- see local_link.py -- so there's no
-# point retrying there). Sums to ~11s, comfortably inside the relay's own
-# GRACE_SECONDS=15 window (relay.py) so a real retry lands before that slot expires.
-RECONNECT_DELAYS = [0, 1, 2, 4, 4]
+# point retrying there). The first few land inside the relay's own GRACE_SECONDS=15
+# window (relay.py) and silently resume the exact same session; attempts after that
+# land as a brand new connection instead (the elapsed session clock isn't preserved,
+# but the pairing itself still succeeds) as long as the host is still around waiting --
+# which it now always is unless its own user explicitly stops hosting (see
+# host_agent.py/host_view.py), so this keeps retrying at RECONNECT_RETRY_INTERVAL
+# forever rather than ever giving up on its own. Only closing the window (see
+# viewer_view.py's Terminate Connection) or the host truly stopping ends things now.
+RECONNECT_DELAYS = [0, 1, 2, 4, 8, 15]
+RECONNECT_RETRY_INTERVAL = 20
 
 
 class ViewerAgent:
@@ -31,6 +39,14 @@ class ViewerAgent:
         # Not known until the host responds -- the host alone decides Normal vs Interview
         # at Start Hosting, the viewer never requests or chooses it.
         self.session_type = "normal"
+        # Also only known once the handshake replies -- None means unrestricted
+        # (postpaid, or an Interview session). Used only for the trial-account "you can
+        # continue for N minutes" notice in viewer_view.py; the account_type driving
+        # that same notice comes from this viewer's own already-logged-in ApiClient
+        # instead (self.app.api.account_type there) since host and viewer are always
+        # the same account in this app -- no need to also thread account_type through
+        # this handshake just to tell a client its own account type back to itself.
+        self.limit_seconds = None
         self.sock = None
         self.running = False
         self._audio_stream = None
@@ -51,7 +67,7 @@ class ViewerAgent:
             return False
         self.running = True
         threading.Thread(target=self._session_thread, daemon=True).start()
-        self.on_status("connected", {})
+        self.on_status("connected", {"limit_seconds": self.limit_seconds})
         return True
 
     def _do_connect(self, silent):
@@ -64,7 +80,7 @@ class ViewerAgent:
         try:
             if self.local_target:
                 ip, port = self.local_target
-                sock, _limit_seconds, session_type, err = local_link.connect_local(
+                sock, limit_seconds, session_type, err = local_link.connect_local(
                     ip, port, self.session_token, self.device_id,
                     machine_id=device_store.load_machine_id())
                 if sock is None:
@@ -72,6 +88,7 @@ class ViewerAgent:
                         self.on_status("error", {"message": err or "Could not connect directly on your network."})
                     return False
                 self.session_type = session_type
+                self.limit_seconds = limit_seconds
             else:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(15)  # matches the relay's own HELLO_TIMEOUT
@@ -92,6 +109,7 @@ class ViewerAgent:
                 info = proto.decode_json(payload) if payload else {}
                 session_type = info.get("session_type")
                 self.session_type = session_type if session_type in ("normal", "interview") else "normal"
+                self.limit_seconds = info.get("limit_seconds")
 
             try:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -124,14 +142,15 @@ class ViewerAgent:
     def _reconnect(self):
         if self.local_target:
             return False  # the LAN host only ever accepts one viewer -- see local_link.py
-        for attempt, delay in enumerate(RECONNECT_DELAYS, start=1):
-            if not self.running or self._explicit_close:
-                return False
+        attempt = 0
+        while self.running and not self._explicit_close:
+            attempt += 1
+            delay = RECONNECT_DELAYS[attempt - 1] if attempt <= len(RECONNECT_DELAYS) else RECONNECT_RETRY_INTERVAL
             if delay:
                 time.sleep(delay)
             if not self.running or self._explicit_close:
                 return False
-            self.on_status("reconnecting", {"attempt": attempt, "max_attempts": len(RECONNECT_DELAYS)})
+            self.on_status("reconnecting", {"attempt": attempt})
             if self._do_connect(silent=True):
                 self.on_status("resumed", {})
                 return True
@@ -147,37 +166,82 @@ class ViewerAgent:
                 msg_type, payload = proto.recv_frame(self.sock)
                 if msg_type is None:
                     return False
-                if msg_type == proto.TYPE_SCREEN_FRAME:
-                    try:
-                        img = Image.open(io.BytesIO(payload)).convert("RGB")
-                        self.on_frame(img)
-                    except Exception:
-                        pass
-                    try:
-                        self._send(proto.TYPE_FRAME_ACK)
-                    except Exception:
-                        return False
-                elif msg_type == proto.TYPE_AUDIO_FRAME:
-                    # The host's mic plays for the viewer in both Normal and Interview
-                    # Mode now -- only sending the viewer's own mic back (_mic_loop
-                    # below) stays Interview-only, which is what makes Interview
-                    # "two-way" and Normal "just the host's voice and the screen".
-                    self._play_audio(payload)
-                    if self.on_audio:
-                        self.on_audio(payload)
-                elif msg_type == proto.TYPE_SESSION_END:
-                    self.on_status("ended", proto.decode_json(payload) if payload else {})
-                    return True
-                elif msg_type == proto.TYPE_TRIAL_LIMIT:
-                    self.on_status("trial_limit", proto.decode_json(payload) if payload else {})
-                    return True
-                elif msg_type == proto.TYPE_ERROR:
-                    self.on_status("error", proto.decode_json(payload))
-                    return True
+                terminal = self._handle_message(msg_type, payload)
+                if terminal is not None:
+                    return terminal
         except Exception as e:
             print(f"[ViewerAgent] recv_loop ended: {type(e).__name__}: {e}")
             return False
         return False
+
+    def _handle_message(self, msg_type, payload):
+        """Handles one already-received message. Returns None to keep the loop going,
+        or True/False (matching _recv_loop's own return contract) for a message type
+        that ends the session."""
+        if msg_type == proto.TYPE_SCREEN_FRAME:
+            # Always render the freshest frame available. If the connection just had a
+            # brief hiccup (network blip, or plain queuing under load), several frames
+            # can end up already sitting in the socket's receive buffer by the time we
+            # get to look -- rendering them one at a time is what made a connection that
+            # had already recovered look like it was still "replaying" a stale old
+            # screen. Drain forward to the last one actually queued right now instead.
+            while True:
+                readable, _, _ = select.select([self.sock], [], [], 0)
+                if not readable:
+                    break
+                next_type, next_payload = proto.recv_frame(self.sock)
+                if next_type is None:
+                    return False
+                if next_type != proto.TYPE_SCREEN_FRAME:
+                    # Something else was queued right behind it (e.g. the session
+                    # ending) -- handle that properly instead of losing it, then stop
+                    # draining; the frame we're about to render is still the latest
+                    # screen frame seen so far.
+                    terminal = self._handle_message(next_type, next_payload)
+                    if terminal is not None:
+                        return terminal
+                    break
+                # Ack the skipped frame too, so the host's in-flight window (see
+                # FRAME_WINDOW in host_agent.py) isn't left waiting on a frame we've
+                # decided not to render.
+                try:
+                    self._send(proto.TYPE_FRAME_ACK)
+                except Exception:
+                    return False
+                msg_type, payload = next_type, next_payload
+            try:
+                img = Image.open(io.BytesIO(payload)).convert("RGB")
+                self.on_frame(img)
+            except Exception:
+                pass
+            try:
+                self._send(proto.TYPE_FRAME_ACK)
+            except Exception:
+                return False
+            return None
+        elif msg_type == proto.TYPE_AUDIO_FRAME:
+            # The host's mic plays for the viewer in both Normal and Interview Mode
+            # now -- only sending the viewer's own mic back (_mic_loop below) stays
+            # Interview-only, which is what makes Interview "two-way" and Normal "just
+            # the host's voice and the screen". `muted` is the same flag _mic_loop
+            # checks -- in Normal Mode there's no own-mic to mute, so here it doubles
+            # as "don't play the host's audio". Recording still captures it regardless
+            # of local mute state.
+            if not self.muted:
+                self._play_audio(payload)
+            if self.on_audio:
+                self.on_audio(payload)
+            return None
+        elif msg_type == proto.TYPE_SESSION_END:
+            self.on_status("ended", proto.decode_json(payload) if payload else {})
+            return True
+        elif msg_type == proto.TYPE_TRIAL_LIMIT:
+            self.on_status("trial_limit", proto.decode_json(payload) if payload else {})
+            return True
+        elif msg_type == proto.TYPE_ERROR:
+            self.on_status("error", proto.decode_json(payload))
+            return True
+        return None
 
     def _play_audio(self, pcm_bytes):
         try:

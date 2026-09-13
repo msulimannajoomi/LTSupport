@@ -3,6 +3,7 @@ import threading
 import time
 import io
 import queue
+import collections
 import ctypes
 import tkinter as tk
 
@@ -32,16 +33,36 @@ MAX_SEND_WIDTH = 1280  # fallback ceiling before the capture loop learns the hos
 MIN_SEND_WIDTH = 960
 MAX_JPEG_QUALITY = 85
 MIN_JPEG_QUALITY = 40
-# Upper bound on how long the capture loop waits for the previous frame's ack before
-# sending another one anyway -- without this cap, a lost ack (dropped packet, viewer on
-# an older build) would stall the stream forever instead of degrading gracefully.
-FRAME_ACK_TIMEOUT = 1.0
-# Delays between retries when the relay connection drops before any viewer has ever
-# joined (e.g. a flaky tunnel dropping an idle "waiting for a viewer" connection) --
-# retried silently instead of ending the hosting session and forcing the user to click
-# Start Hosting again. Once a viewer HAS joined, a dropped leg ends that session instead
-# (the relay tells the viewer host_disconnected), so this never applies mid-session.
+# How many frames can be in flight (sent, not yet acked) at once. A real deployment
+# means real geographic round-trip time -- 150-300ms is normal for a distant server,
+# not a sign of a bad link. Bounding to exactly 1 in-flight frame (the previous design)
+# hard-caps the frame rate to roughly 1000/RTT regardless of available bandwidth, which
+# is what "the stream is so slow" actually was. A small window decouples throughput
+# from RTT while still bounding backlog far short of unbounded bufferbloat.
+FRAME_WINDOW = 3
+# Upper bound on how long the capture loop waits for a free slot in that window before
+# skipping this capture cycle and trying again -- without this cap, a lost ack (dropped
+# packet, viewer on an older build) would stall the stream forever instead of degrading
+# gracefully.
+FRAME_ACK_TIMEOUT = 2.0
+# Round-trip thresholds for the adaptive quality step in _on_frame_ack. Set well above
+# typical cross-region latency (150-300ms) so ordinary geography doesn't get mistaken
+# for network trouble and needlessly throttled -- propagation delay from distance isn't
+# something a smaller/lower-quality frame can fix anyway; these only kick in for RTTs
+# that actually indicate queuing/congestion on the link itself.
+RTT_DEGRADE_THRESHOLD = 0.8
+RTT_IMPROVE_THRESHOLD = 0.3
+# Delays between retries when the relay connection drops, whether that's before any
+# viewer has ever joined (e.g. a flaky tunnel dropping an idle "waiting for a viewer"
+# connection) or after one has already come and gone -- a dropped leg no longer ends the
+# whole hosting run (see _recv_loop's TYPE_SESSION_END/TYPE_TRIAL_LIMIT handling), so
+# there's always something worth reconnecting to resume. The first few land inside the
+# relay's own GRACE_SECONDS window; attempts after that just register fresh, which the
+# relay accepts the same way. Retried indefinitely, same as the viewer side's own
+# indefinite reconnect (see RECONNECT_RETRY_INTERVAL in viewer_agent.py) -- only this
+# host's own explicit Stop Hosting (self.running = False) ever gives up.
 RELAY_RECONNECT_DELAYS = [1, 2, 4, 8, 8]
+RELAY_RECONNECT_RETRY_INTERVAL = 20
 
 KEY_MAPPING = {
     'BackSpace': 'backspace', 'Return': 'enter', 'Tab': 'tab', 'Escape': 'esc',
@@ -114,15 +135,20 @@ class HostAgent:
         # the frame stream, which looks exactly like a random, unexplained disconnect on
         # the receiving end. Most visible in Interview Mode, where both are active at once.
         self._sock_lock = threading.Lock()
-        # Bounds outstanding frames to 1: the capture loop won't grab+send the next frame
-        # until the viewer has acked the last one (or FRAME_ACK_TIMEOUT elapses). Without
-        # this, a slow/congested link lets JPEGs pile up in the OS send buffer -- each one
-        # still gets sent eventually, so the viewer just watches an ever-growing backlog of
-        # stale frames ("bufferbloat"), which is what "gets laggier over time" actually is.
-        # Starts set so the very first frame goes out immediately.
-        self._frame_ack_event = threading.Event()
-        self._frame_ack_event.set()
-        self._frame_sent_at = None
+        # Bounds outstanding frames to FRAME_WINDOW: the capture loop won't grab+send
+        # another frame once that many are already in flight, unacked. Without this, a
+        # slow/congested link lets JPEGs pile up in the OS send buffer -- each one still
+        # gets sent eventually, so the viewer just watches an ever-growing backlog of
+        # stale frames ("bufferbloat"). A window > 1 (rather than a strict one-at-a-time
+        # Event) is what lets throughput scale beyond 1000ms/RTT on a real, geographically
+        # distant connection -- see FRAME_WINDOW.
+        self._frame_ack_semaphore = threading.Semaphore(FRAME_WINDOW)
+        # FIFO of send timestamps, one per frame currently in flight -- paired with acks
+        # in the same order on the assumption the viewer acks frames in the order it
+        # receives them (true: TCP delivers in order, and the viewer acks immediately on
+        # receipt), so popleft() in _on_frame_ack always matches the oldest still-unacked
+        # frame.
+        self._frame_sent_times = collections.deque()
         self._send_quality = 65
         self._send_width = MAX_SEND_WIDTH
         # Replaced with the host's real screen width (capped) as soon as _capture_loop
@@ -130,10 +156,19 @@ class HostAgent:
         # round-trip actually calls for it looks far better than always starting
         # downscaled "to be safe."
         self._max_send_width = MAX_SEND_WIDTH
-        # Relay mode only: whether a viewer has joined yet this hosting run -- gates
-        # whether a dropped relay connection is worth silently retrying (see
-        # RELAY_RECONNECT_DELAYS) or means the session is genuinely over.
-        self._had_viewer = False
+        # The actual pixel dimensions of whatever mss captures (sct.monitors[0] -- the
+        # full virtual desktop across every monitor), set for real once _capture_loop
+        # starts. Every relative (0..1) position/pointer coordinate from the viewer
+        # gets multiplied back into absolute host pixels against THESE, not a fresh
+        # pyautogui.size() call -- pyautogui.size() only ever reports the PRIMARY
+        # monitor, which silently disagrees with this on any multi-monitor host and is
+        # exactly what let a positioned text/pointer land in the wrong spot there. The
+        # pyautogui fallback here only covers the brief window before the capture loop
+        # has actually measured the real thing.
+        try:
+            self._monitor_width, self._monitor_height = pyautogui.size()
+        except Exception:
+            self._monitor_width, self._monitor_height = 1920, 1080
 
     def _send(self, msg_type, payload=b""):
         with self._sock_lock:
@@ -272,7 +307,7 @@ class HostAgent:
         self._usage_reported = True
         minutes = (time.time() - self._session_started_at) / 60
         try:
-            self.api.session_report(minutes, self._session_type)
+            self.api.session_report(minutes, self._session_type, device_id=self.device_id or "")
         except Exception:
             pass
 
@@ -335,17 +370,23 @@ class HostAgent:
         info = proto.decode_json(payload)
         self.device_id = info["device_id"]
         device_store.save_device_id(self.device_id, org_id)
-        self._frame_ack_event.set()
+        # Frames in flight on the old (now-dead) connection are irrelevant -- reset the
+        # window to fully available rather than leaving it partially checked-out with no
+        # acks ever coming for those frames.
+        self._frame_ack_semaphore = threading.Semaphore(FRAME_WINDOW)
+        self._frame_sent_times.clear()
         return True
 
     def _relay_reconnect(self):
-        for attempt, delay in enumerate(RELAY_RECONNECT_DELAYS, start=1):
-            if not self.running:
-                return False
+        attempt = 0
+        while self.running:
+            attempt += 1
+            delay = (RELAY_RECONNECT_DELAYS[attempt - 1] if attempt <= len(RELAY_RECONNECT_DELAYS)
+                      else RELAY_RECONNECT_RETRY_INTERVAL)
             time.sleep(delay)
             if not self.running:
                 return False
-            self.on_status("reconnecting", {"attempt": attempt, "max_attempts": len(RELAY_RECONNECT_DELAYS)})
+            self.on_status("reconnecting", {"attempt": attempt})
             if self._relay_register(silent=True):
                 # Deliberately not "online" -- that status also (re-)launches the overlay
                 # window in host_view.py, which only needs to happen once per hosting run.
@@ -361,10 +402,12 @@ class HostAgent:
 
         while True:
             clean = self._recv_loop()
-            # Only worth retrying while still waiting for the very first viewer -- once
-            # one has joined, a dropped leg ends that specific session instead (the relay
-            # tells the viewer host_disconnected), so there's nothing left to resume here.
-            if clean or self._had_viewer or not self.running:
+            # A viewer's own session ending (TYPE_SESSION_END/TYPE_TRIAL_LIMIT) no longer
+            # counts as "done" -- _recv_loop keeps looping through those on its own,
+            # waiting for the next viewer, so getting here at all means either a real
+            # protocol error (clean=True) or the connection itself actually dropped
+            # (clean=False, worth reconnecting through) or Stop Hosting was clicked.
+            if clean or not self.running:
                 break
             if not self._relay_reconnect():
                 break
@@ -375,18 +418,54 @@ class HostAgent:
     def _capture_loop(self):
         with mss.mss() as sct:
             monitor = sct.monitors[0]
+            # The real, authoritative pixel dimensions of what's actually being
+            # captured and sent -- see the matching comment in __init__ for why
+            # position/pointer math uses these instead of pyautogui.size(), and below
+            # for why the overlay's own font-size scaling now uses this same number
+            # too (it used to independently query its own window's screen width,
+            # which -- like pyautogui.size() -- only ever reflects the PRIMARY
+            # monitor, silently disagreeing with this on a multi-monitor host).
+            self._monitor_width, self._monitor_height = monitor["width"], monitor["height"]
+            if self.overlay_app:
+                self.overlay_app.root.after(0, self.overlay_app.sync_screen_dimensions,
+                                             monitor["width"], monitor["height"])
             # Cap at 1920 even on a larger/multi-monitor host -- a full-quality frame
             # much wider than that gets expensive to encode/send every ~30ms for a gain
             # the viewer's own display usually can't even show.
             self._max_send_width = min(monitor["width"], 1920)
             self._send_width = self._max_send_width
+            # How many consecutive full-window timeouts (see FRAME_ACK_TIMEOUT) to
+            # tolerate before assuming the missing acks are never coming and
+            # self-healing -- see the comment below.
+            consecutive_timeouts = 0
             while self.running:
                 try:
-                    # Wait for the previous frame's ack before sending the next one -- see
-                    # the comment on _frame_ack_event in __init__. The timeout keeps this
-                    # from stalling forever if an ack is lost.
-                    self._frame_ack_event.wait(timeout=FRAME_ACK_TIMEOUT)
-                    self._frame_ack_event.clear()
+                    # Wait for a free slot in the in-flight window (see FRAME_WINDOW)
+                    # rather than a strict one-at-a-time ack.
+                    if self._frame_ack_semaphore.acquire(timeout=FRAME_ACK_TIMEOUT):
+                        consecutive_timeouts = 0
+                    else:
+                        consecutive_timeouts += 1
+                        if consecutive_timeouts < 2:
+                            continue
+                        # The whole window has sat checked out with zero acks for
+                        # ~2*FRAME_ACK_TIMEOUT seconds straight. That's not "the link is
+                        # slow" (a slow link still delivers *some* acks, just later) --
+                        # it means the in-flight frames' acks are never coming at all.
+                        # One real way that happens: the relay briefly holds a dropped
+                        # viewer's slot open to let it reconnect (GRACE_SECONDS in
+                        # relay.py) and silently discards any frames sent during that
+                        # window since there's no viewer attached to forward them to --
+                        # their acks can then never arrive, permanently leaking permits
+                        # off this window one grace period at a time until it's stuck at
+                        # zero forever, which looked like the video just stopping dead
+                        # while everything else in the session kept working. Self-heal
+                        # by resetting to a fresh, fully-available window instead of
+                        # staying wedged.
+                        self._frame_ack_semaphore = threading.Semaphore(FRAME_WINDOW)
+                        self._frame_sent_times.clear()
+                        self._frame_ack_semaphore.acquire()  # always succeeds, just reset
+                        consecutive_timeouts = 0
 
                     img = sct.grab(monitor)
                     pil_img = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
@@ -399,8 +478,15 @@ class HostAgent:
                         send_img = send_img.resize((width, max(1, int(send_img.height * scale))))
 
                     buf = io.BytesIO()
-                    send_img.save(buf, format="JPEG", quality=self._send_quality)
-                    self._frame_sent_at = time.time()
+                    # subsampling=0 forces full-resolution color (4:4:4) instead of
+                    # JPEG's default 4:2:0, which halves color detail in both directions.
+                    # Barely matters for photo-like content, but it's exactly what was
+                    # blurring sharp text edges and thin strokes -- the instructor
+                    # overlay, cursors, UI text -- since those are almost pure color
+                    # transitions, not gradients. Costs some bandwidth for a real gain in
+                    # legibility on exactly the content this was complained about.
+                    send_img.save(buf, format="JPEG", quality=self._send_quality, subsampling=0)
+                    self._frame_sent_times.append(time.time())
                     self._send(proto.TYPE_SCREEN_FRAME, buf.getvalue())
                     time.sleep(0.03)
                 except Exception as e:
@@ -409,17 +495,21 @@ class HostAgent:
 
     def _on_frame_ack(self):
         """Called from _recv_loop when the viewer acks a frame. Adjusts outgoing quality/
-        resolution from the measured round-trip time -- eases up under a slow link, creeps
-        back up once it recovers -- then releases the capture loop to send the next frame."""
-        if self._frame_sent_at is not None:
-            rtt = time.time() - self._frame_sent_at
-            if rtt > 0.35:
+        resolution from the measured round-trip time -- eases up under a genuinely
+        congested link, creeps back up once it recovers -- then frees a slot in the
+        in-flight window for the capture loop to send another frame."""
+        if self._frame_sent_times:
+            # FIFO: pairs with the oldest still-unacked frame, on the assumption acks
+            # arrive in the same order frames were sent (true given TCP's in-order
+            # delivery and the viewer acking immediately on receipt).
+            rtt = time.time() - self._frame_sent_times.popleft()
+            if rtt > RTT_DEGRADE_THRESHOLD:
                 self._send_quality = max(MIN_JPEG_QUALITY, self._send_quality - 10)
                 self._send_width = max(MIN_SEND_WIDTH, self._send_width - 128)
-            elif rtt < 0.12:
+            elif rtt < RTT_IMPROVE_THRESHOLD:
                 self._send_quality = min(MAX_JPEG_QUALITY, self._send_quality + 5)
                 self._send_width = min(self._max_send_width, self._send_width + 64)
-        self._frame_ack_event.set()
+        self._frame_ack_semaphore.release()
 
     def _audio_loop(self):
         try:
@@ -473,10 +563,12 @@ class HostAgent:
             pass
 
     def _recv_loop(self):
-        """Runs until this leg of the connection ends. Returns True if it ended for a
-        reason that should NOT be retried (viewer_left/trial_limit/relay error) -- False
-        for anything that looks like an ordinary connection drop, which _run_relay may
-        retry through (see _had_viewer there)."""
+        """Runs until this leg of the connection ends. TYPE_SESSION_END and
+        TYPE_TRIAL_LIMIT don't end this at all -- see below, they just reset per-session
+        state and let the loop keep running, waiting for the next viewer. Returns True
+        only for a genuine protocol error, which should NOT be retried -- False for
+        anything that looks like an ordinary connection drop, which _run_relay retries
+        through."""
         try:
             while self.running:
                 msg_type, payload = proto.recv_frame(self.sock)
@@ -499,7 +591,6 @@ class HostAgent:
                 elif msg_type == proto.TYPE_VIEWER_JOINED:
                     # self._session_type was already fixed at Start Hosting -- the
                     # relay's payload here just confirms it, it can't change it.
-                    self._had_viewer = True
                     self._start_recording()
                     # Host mic -> viewer now runs in both Normal and Interview Mode --
                     # only the viewer's own mic (see viewer_agent.py's _mic_loop) stays
@@ -509,13 +600,23 @@ class HostAgent:
                     threading.Thread(target=self._audio_loop, daemon=True).start()
                     self.on_status("viewer_joined", {"session_type": self._session_type})
                 elif msg_type == proto.TYPE_SESSION_END:
+                    # That viewer's session is over -- not this hosting run. Reset back
+                    # to the same idle state as right after Start Hosting and keep
+                    # waiting on this same connection; the relay keeps this device
+                    # registered and ready for the next viewer regardless. Only this
+                    # host's own explicit Stop Hosting (self.running = False, checked by
+                    # the while loop above) ever ends things from here now.
                     self._audio_active = False
+                    self._stop_recording()
                     self.on_status("viewer_left", {})
-                    return True
                 elif msg_type == proto.TYPE_TRIAL_LIMIT:
+                    # Same as TYPE_SESSION_END above -- this viewer's plan/balance ran
+                    # out, not this hosting run. A later viewer is re-checked against the
+                    # account's plan fresh when they connect (see relay.py), so there's
+                    # no reason to end the whole session over it here.
                     self._audio_active = False
+                    self._stop_recording()
                     self.on_status("trial_limit", proto.decode_json(payload))
-                    return True
                 elif msg_type == proto.TYPE_ERROR:
                     self.on_status("error", proto.decode_json(payload))
                     return True
@@ -536,8 +637,7 @@ class HostAgent:
     def _process_input(self, data):
         cmd_type = data.get("type")
         if cmd_type == "mouse_move":
-            scr_w, scr_h = pyautogui.size()
-            self.mouse.position = (int(data["x"] * scr_w), int(data["y"] * scr_h))
+            self.mouse.position = (int(data["x"] * self._monitor_width), int(data["y"] * self._monitor_height))
         elif cmd_type == "mouse_click":
             btn = {"left": Button.left, "right": Button.right, "middle": Button.middle}.get(data["button"], Button.left)
             if data["pressed"]:
@@ -566,20 +666,23 @@ class HostAgent:
         if cmd == "overlay_text":
             root.after(0, self.overlay_app.update_text, data.get("text", ""))
         elif cmd == "overlay_toggle":
-            root.after(0, lambda: self.overlay_app.close_overlay() if root.state() == "normal" else self.overlay_app.show_overlay())
+            # Decided from the overlay's own tracked .visible flag, not root.state() --
+            # state() is unreliable for this overrideredirect window and was what let
+            # rapid toggling eventually get stuck permanently hidden.
+            root.after(0, lambda: self.overlay_app.close_overlay() if self.overlay_app.visible else self.overlay_app.show_overlay())
         elif cmd == "overlay_style":
-            root.after(0, self.overlay_app.update_style, data.get("fg"), data.get("size"))
+            root.after(0, self.overlay_app.update_style, data.get("fg"), data.get("size"),
+                       data.get("family"), data.get("bold"), data.get("opacity"))
         elif cmd == "overlay_move":
-            scr_w, scr_h = pyautogui.size()
-            root.after(0, self.overlay_app.update_position, data.get("x", 0) * scr_w, data.get("y", 0) * scr_h)
+            root.after(0, self.overlay_app.update_position,
+                       data.get("x", 0) * self._monitor_width, data.get("y", 0) * self._monitor_height)
         elif cmd == "overlay_visibility":
             root.after(0, self.overlay_app.set_capture_visibility, data.get("visible", True))
         elif cmd == "overlay_pointer":
             if not self.pointer_overlay:
                 return
             if data.get("visible", True) and "x" in data:
-                scr_w, scr_h = pyautogui.size()
-                x, y = data["x"] * scr_w, data["y"] * scr_h
+                x, y = data["x"] * self._monitor_width, data["y"] * self._monitor_height
                 root.after(0, self.pointer_overlay.move_to, x, y)
                 # There is no real click on this host -- "click" here just means flash
                 # the marker to tell whoever's at this machine to click there themselves.
