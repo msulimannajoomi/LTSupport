@@ -36,7 +36,13 @@ class ApiClient:
         self.org_id = None
         self.org_name = None
         self.account_type = None
-        self.balance_rupees = 0
+        # USD cents -- the whole prepaid balance is USD-denominated now (see
+        # backend/config.py's PREPAID_RATE_PER_HOUR_CENTS). hours_remaining/
+        # hours_consumed come pre-computed from the backend rather than derived
+        # here, so this client never needs its own copy of the per-hour rate.
+        self.balance_cents = 0
+        self.hours_remaining = 0
+        self.hours_consumed = 0
         self.session_count = 0
         self.total_minutes_used = 0
         self.blocked = False
@@ -95,7 +101,7 @@ class ApiClient:
         """Every new account starts on trial -- there's no account_type choice here by
         design. There's no separate "upgrade to prepaid" step either -- buying hours
         (see create_checkout) upgrades a trial account to prepaid automatically the
-        moment Paddle confirms payment; postpaid is never self-service either way."""
+        moment Stripe confirms payment; postpaid is never self-service either way."""
         data = self._post("/api/signup", {
             "org_name": org_name, "email": email, "phone": phone, "password": password,
         })
@@ -126,7 +132,9 @@ class ApiClient:
         self.org_id = data["org_id"]
         self.org_name = data["org_name"]
         self.account_type = data["account_type"]
-        self.balance_rupees = data.get("balance_rupees", 0)
+        self.balance_cents = data.get("balance_cents", 0)
+        self.hours_remaining = data.get("hours_remaining", 0)
+        self.hours_consumed = data.get("hours_consumed", 0)
         self.session_count = data.get("session_count", 0)
         self.total_minutes_used = data.get("total_minutes_used", 0)
         self.blocked = data.get("blocked", False)
@@ -144,7 +152,9 @@ class ApiClient:
         self.org_id = None
         self.org_name = None
         self.account_type = None
-        self.balance_rupees = 0
+        self.balance_cents = 0
+        self.hours_remaining = 0
+        self.hours_consumed = 0
         self.session_count = 0
         self.total_minutes_used = 0
         self.blocked = False
@@ -180,11 +190,11 @@ class ApiClient:
         return self._post("/api/session/verify-peer", {"peer_token": peer_token})["same_account"]
 
     def create_checkout(self):
-        """Starts a Paddle purchase -- returns a hosted checkout URL to open in the
-        system browser, where Paddle's own UI is what actually lets the customer pick
+        """Starts a Stripe purchase -- returns a hosted checkout URL to open in the
+        system browser, where Stripe's own UI is what actually lets the customer pick
         how many hours and see the price, not anything on this end. Balance isn't
         credited by this call, and a trial account isn't upgraded to prepaid by it
-        either; both only happen once Paddle confirms payment via the backend's
+        either; both only happen once Stripe confirms payment via the backend's
         webhook, which is why refresh_account() won't show either updated until
         sometime after the browser checkout actually completes."""
         return self._post("/api/billing/checkout", {})["checkout_url"]

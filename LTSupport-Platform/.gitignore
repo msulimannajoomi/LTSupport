@@ -13,3 +13,8 @@ backend/ltsupport.db
 # PyInstaller build output
 build/
 dist/
+
+# Nuitka / Inno Setup build output
+dist_nuitka/
+dist_installer/
+nuitka-crash-report.xml

@@ -243,7 +243,7 @@ class ViewerView:
         self.font_size_entry.insert(0, "12")
         self.font_size_entry.pack(side="left", padx=6)
         ctk.CTkButton(pad, text="Apply", width=60, height=26, corner_radius=6, fg_color=theme.ACCENT,
-                      text_color="#0f172a",
+                      text_color="white",
                       command=self._apply_text_size).pack(side="left")
 
         pad_font = ctk.CTkFrame(self.settings_panel, fg_color="transparent")
@@ -284,7 +284,7 @@ class ViewerView:
         self.words_per_line_entry.insert(0, str(self._words_per_line))
         self.words_per_line_entry.pack(side="left", padx=6)
         ctk.CTkButton(pad_speech, text="Apply", width=60, height=26, corner_radius=6, fg_color=theme.ACCENT,
-                      text_color="#0f172a",
+                      text_color="white",
                       command=self._apply_words_per_line).pack(side="left")
 
         pad2 = ctk.CTkFrame(self.settings_panel, fg_color="transparent")
@@ -298,12 +298,20 @@ class ViewerView:
                           hover_color=color, border_width=1, border_color=theme.BORDER,
                           command=lambda c=color: self._apply_pointer_color(c)).pack(side="left", padx=3)
 
+        ctk.CTkLabel(pad2, text="   SIZE", font=theme.small(), text_color=theme.TEXT_MUTED).pack(side="left", padx=(16, 0))
+        self.pointer_size_entry = ctk.CTkEntry(pad2, width=50, height=26)
+        self.pointer_size_entry.insert(0, "16")
+        self.pointer_size_entry.pack(side="left", padx=6)
+        ctk.CTkButton(pad2, text="Apply", width=60, height=26, corner_radius=6, fg_color=theme.ACCENT,
+                      text_color="white",
+                      command=self._apply_pointer_size).pack(side="left")
+
         # Every control above applies instantly and leaves the panel open -- changing
         # several things (color, then size, then font...) in one sitting used to mean
         # reopening it after each single change. This is the one explicit way to close
         # it now, alongside the ⚙ Style button itself.
         ctk.CTkButton(pad2, text="Done", width=70, height=26, corner_radius=6, fg_color=theme.ACCENT,
-                      text_color="#0f172a", font=theme.small(),
+                      text_color="white", font=theme.small(),
                       command=self.toggle_settings).pack(side="right")
 
     def toggle_settings(self):
@@ -418,7 +426,7 @@ class ViewerView:
         self.control_mode = active
         if active:
             self.control_btn.configure(text="👆 Release Control", fg_color=theme.ACCENT,
-                                        hover_color=theme.ACCENT_HOVER, text_color="#0f172a")
+                                        hover_color=theme.ACCENT_HOVER, text_color="white")
             self.agent.send_overlay({"type": "control_start"})
             self.canvas.focus_set()
         else:
@@ -436,7 +444,7 @@ class ViewerView:
         self.positioning_text = active
         if active:
             self.position_btn.configure(text="📌 Fix Position", fg_color=theme.ACCENT,
-                                         hover_color=theme.ACCENT_HOVER, text_color="#0f172a")
+                                         hover_color=theme.ACCENT_HOVER, text_color="white")
         else:
             self.position_btn.configure(text="📍 Position Text", fg_color=theme.BG,
                                          hover_color=theme.CARD_HOVER, text_color=theme.TEXT)
@@ -499,7 +507,14 @@ class ViewerView:
         # 1:1 point-to-pixel screen.
         preview_scale = dw / REFERENCE_SCREEN_WIDTH
         effective_size = max(6, round(self._preview_size * preview_scale))
-        font = (self._preview_family, effective_size, "bold" if self._preview_bold else "normal")
+        # Negative size tells Tk to treat this as literal PIXELS rather than the
+        # default of POINTS -- a positive size gets scaled by the screen's DPI
+        # (96/72 on a normal Windows display, ~33% bigger than the number itself),
+        # which is what made this preview consistently render larger than the same
+        # effective_size actually looks once it comes back through the host's real
+        # overlay (a PIL ImageFont size, which is already a literal pixel height
+        # with no such DPI scaling applied).
+        font = (self._preview_family, -effective_size, "bold" if self._preview_bold else "normal")
         # No width -- MovableOverlay on the host is sized to exactly fit the text now,
         # not a box with a fixed wrapping width (see overlay.py), so this only wraps at
         # an explicit newline the viewer typed, same as the host does.
@@ -589,7 +604,7 @@ class ViewerView:
         self.overlay_visible = not self.overlay_visible
         if self.overlay_visible:
             self.toggle_overlay_btn.configure(text="Toggle Overlay (On)", fg_color=theme.ACCENT,
-                                               hover_color=theme.ACCENT_HOVER, text_color="#0f172a")
+                                               hover_color=theme.ACCENT_HOVER, text_color="white")
         else:
             self.toggle_overlay_btn.configure(text="Toggle Overlay (Off)", fg_color=theme.BG,
                                                hover_color=theme.CARD_HOVER, text_color=theme.TEXT)
@@ -733,8 +748,13 @@ class ViewerView:
             data["opacity"] = opacity
         self.agent.send_overlay(data)
 
-    def send_pointer_color(self, color):
-        self.agent.send_overlay({"type": "overlay_pointer_style", "color": color})
+    def send_pointer_style(self, color=None, size=None):
+        data = {"type": "overlay_pointer_style"}
+        if color:
+            data["color"] = color
+        if size:
+            data["size"] = size
+        self.agent.send_overlay(data)
 
     def _apply_text_color(self, color):
         self.send_style(fg=color)
@@ -775,7 +795,15 @@ class ViewerView:
         self._update_text_preview()
 
     def _apply_pointer_color(self, color):
-        self.send_pointer_color(color)
+        self.send_pointer_style(color=color)
+
+    def _apply_pointer_size(self):
+        size = self.pointer_size_entry.get().strip()
+        try:
+            if int(size) > 0:
+                self.send_pointer_style(size=size)
+        except ValueError:
+            pass
 
     def close(self):
         if self._closed:

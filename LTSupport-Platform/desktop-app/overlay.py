@@ -269,12 +269,23 @@ class MovableOverlay:
         scale = self.host_screen_width / REFERENCE_SCREEN_WIDTH
         effective_size = max(6, round(self.font_size * scale))
         font = _load_truetype_font(self.font_family, effective_size, self.font_weight == "bold")
+        # PIL's multiline_text defaults to a FIXED 4px gap between lines, unrelated to
+        # the font's actual size -- at effective sizes well below the ~12-16px that
+        # constant reads as "normal" for, it becomes a disproportionately large gap
+        # (most host screens are narrower than REFERENCE_SCREEN_WIDTH, so
+        # effective_size is usually well under font_size -- see the scale comment
+        # above). Scaling it with effective_size instead keeps line spacing looking
+        # like a normal single line-height at every size, matching the viewer's own
+        # local preview (a Tk canvas text item, whose line spacing already comes
+        # from the font's own metrics rather than an unrelated constant).
+        spacing = max(1, round(effective_size * 0.35))
         draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-        left, top, right, bottom = draw.multiline_textbbox((0, 0), self.text, font=font)
+        left, top, right, bottom = draw.multiline_textbbox((0, 0), self.text, font=font, spacing=spacing)
         w, h = max(1, right - left), max(1, bottom - top)
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        draw.multiline_text((-left, -top), self.text, font=font, fill=_hex_to_rgb(self.fg_color) + (self.opacity,))
+        draw.multiline_text((-left, -top), self.text, font=font, fill=_hex_to_rgb(self.fg_color) + (self.opacity,),
+                             spacing=spacing)
         _push_layered_image(self._hwnd, img, self._x, self._y)
 
     def update_text(self, text):
@@ -340,22 +351,28 @@ class PointerOverlay:
     # Small and quiet by default -- a thin ring with a soft center dot, not a bold
     # crosshair, so it reads as "someone is pointing here" without dominating the
     # screen. The dot's stipple pattern fakes translucency (plain Tk canvas fills have
-    # no real alpha channel). Both are changed live via update_color().
+    # no real alpha channel). Both size and color are changed live via update_style().
     SIZE = 16
     COLOR = "#f2f2f2"
     OUTLINE = "#9ca3af"
     PULSE_SIZE = 44  # briefly grows to this size for the "click here" cue -- see pulse()
+    # Kept as a ratio (not the flat PULSE_SIZE constant) so a live size change (see
+    # update_style) keeps the same relative "click here" pulse effect at any size,
+    # instead of the pulse staying locked to the original default's absolute size.
+    _PULSE_RATIO = PULSE_SIZE / SIZE
 
-    def __init__(self, root, color=None):
+    def __init__(self, root, color=None, size=None):
         self.root = root
         self.color = color or self.COLOR
+        self.size = int(size) if size else self.SIZE
+        self.pulse_size = round(self.size * self._PULSE_RATIO)
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.attributes("-transparentcolor", "black")
         self.root.configure(bg="black")
-        self.root.geometry(f"{self.SIZE}x{self.SIZE}+0+0")
+        self.root.geometry(f"{self.size}x{self.size}+0+0")
 
-        self.canvas = tk.Canvas(self.root, width=self.SIZE, height=self.SIZE, bg="black", highlightthickness=0)
+        self.canvas = tk.Canvas(self.root, width=self.size, height=self.size, bg="black", highlightthickness=0)
         self.canvas.pack()
         self._draw()
 
@@ -367,19 +384,27 @@ class PointerOverlay:
     def _draw(self):
         self.canvas.delete("all")
         pad = 2
-        self.ring_id = self.canvas.create_oval(pad, pad, self.SIZE - pad, self.SIZE - pad,
+        self.ring_id = self.canvas.create_oval(pad, pad, self.size - pad, self.size - pad,
                                                 outline=self.OUTLINE, width=1)
-        dot_r = max(2, self.SIZE // 6)
-        cx = cy = self.SIZE / 2
+        dot_r = max(2, self.size // 6)
+        cx = cy = self.size / 2
         self.dot_id = self.canvas.create_oval(cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r,
                                                fill=self.color, outline="", stipple="gray50")
 
-    def update_color(self, color):
-        if not color:
-            return
-        self.color = color
-        self.canvas.itemconfig(self.dot_id, fill=color)
-        self.canvas.itemconfig(self.ring_id, outline=color)
+    def update_style(self, color=None, size=None):
+        if color:
+            self.color = color
+        if size:
+            try:
+                new_size = max(6, int(size))
+            except (TypeError, ValueError):
+                new_size = None
+            if new_size and new_size != self.size:
+                self.size = new_size
+                self.pulse_size = round(self.size * self._PULSE_RATIO)
+                self.root.geometry(f"{self.size}x{self.size}")
+                self.canvas.configure(width=self.size, height=self.size)
+        self._draw()
 
     def _apply_capture_exclusion(self):
         try:
@@ -392,7 +417,7 @@ class PointerOverlay:
     def move_to(self, x, y):
         if self.root.state() == "withdrawn":
             self.root.deiconify()
-        half = self.SIZE // 2
+        half = self.size // 2
         self.root.geometry(f"+{int(x - half)}+{int(y - half)}")
 
     def pulse(self):
@@ -400,21 +425,21 @@ class PointerOverlay:
         "click here" cue shown instead of ever performing a real click on the host."""
         if self.root.state() == "withdrawn":
             return
-        cx = self.root.winfo_x() + self.SIZE // 2
-        cy = self.root.winfo_y() + self.SIZE // 2
-        half = self.PULSE_SIZE // 2
-        self.root.geometry(f"{self.PULSE_SIZE}x{self.PULSE_SIZE}+{cx - half}+{cy - half}")
-        self.canvas.configure(width=self.PULSE_SIZE, height=self.PULSE_SIZE)
+        cx = self.root.winfo_x() + self.size // 2
+        cy = self.root.winfo_y() + self.size // 2
+        half = self.pulse_size // 2
+        self.root.geometry(f"{self.pulse_size}x{self.pulse_size}+{cx - half}+{cy - half}")
+        self.canvas.configure(width=self.pulse_size, height=self.pulse_size)
         self.canvas.delete("all")
         pad = 3
-        self.canvas.create_oval(pad, pad, self.PULSE_SIZE - pad, self.PULSE_SIZE - pad,
+        self.canvas.create_oval(pad, pad, self.pulse_size - pad, self.pulse_size - pad,
                                  outline=self.color, width=3)
         self.root.after(280, lambda: self._end_pulse(cx, cy))
 
     def _end_pulse(self, cx, cy):
-        half = self.SIZE // 2
-        self.root.geometry(f"{self.SIZE}x{self.SIZE}+{cx - half}+{cy - half}")
-        self.canvas.configure(width=self.SIZE, height=self.SIZE)
+        half = self.size // 2
+        self.root.geometry(f"{self.size}x{self.size}+{cx - half}+{cy - half}")
+        self.canvas.configure(width=self.size, height=self.size)
         self._draw()
 
     def hide(self):

@@ -80,7 +80,7 @@ class HostView(ctk.CTkFrame):
                      justify="left").pack(anchor="w", pady=(0, 16))
 
         self.toggle_btn = ctk.CTkButton(inner, text="Start Hosting", height=44, corner_radius=8,
-                                         fg_color=theme.SUCCESS, hover_color=theme.SUCCESS_HOVER, text_color="#0f172a",
+                                         fg_color=theme.SUCCESS, hover_color=theme.SUCCESS_HOVER, text_color="white",
                                          font=theme.h3(), command=self.toggle)
         self.toggle_btn.pack(fill="x")
 
@@ -159,14 +159,14 @@ class HostView(ctk.CTkFrame):
             if self.agent.local_mode:
                 self.status_label.configure(text=f"Hosting — waiting for a viewer (Local Network){mode_label}")
                 self.instructions_label.configure(
-                    text=f"To connect: on the other computer, open LTSupport (same WiFi network), "
+                    text=f"To connect: on the other computer, open VantagePoint (same WiFi network), "
                          f"log in to the same account, and go to the Dashboard — this PC will show up "
                          f"as {device_id} in the device list, reachable over the local network. If it "
                          f"isn't found, type the ID above into the device-id box instead.")
             else:
                 self.status_label.configure(text=f"Hosting — waiting for a viewer{mode_label}")
                 self.instructions_label.configure(
-                    text=f"To connect: on the other computer, open LTSupport, log in, go to the "
+                    text=f"To connect: on the other computer, open VantagePoint, log in, go to the "
                          f"Dashboard, and under \"Join a Device\" paste this ID: {device_id}")
             self.toggle_btn.configure(state="normal", text="Stop Hosting", fg_color=theme.DANGER, hover_color=theme.DANGER_HOVER)
             self.agent.launch_overlay(self.app)

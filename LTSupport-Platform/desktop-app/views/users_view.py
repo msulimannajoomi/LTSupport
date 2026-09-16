@@ -59,7 +59,7 @@ class UsersView(ctk.CTkFrame):
 
         self.add_btn = ctk.CTkButton(add_inner, text="Add Team Member", height=40, corner_radius=8,
                                       fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
-                                      text_color="#0f172a", font=theme.h3(), command=self._do_add)
+                                      text_color="white", font=theme.h3(), command=self._do_add)
         self.add_btn.pack(anchor="w")
 
         list_header = ctk.CTkFrame(scroll, fg_color="transparent")

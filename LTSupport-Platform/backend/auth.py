@@ -42,7 +42,7 @@ def issue_session(user_id: int, member_id: str = None) -> str:
 
 def resolve_session(token: str):
     """Returns the owning user dict for a valid, non-expired session token, else None.
-    Every existing field (org_id, account_type, balance_rupees, blocked, etc.) always
+    Every existing field (org_id, account_type, balance_cents, blocked, etc.) always
     comes from the org's own record, exactly as before RBAC existed -- a member session
     just gets a "role" key layered on top (see db.py's org_members section), which no
     pre-existing code reads or is affected by. A plain org login (not tied to any

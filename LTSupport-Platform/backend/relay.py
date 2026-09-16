@@ -292,7 +292,7 @@ async def _expire_grace(host_conn, org_id, session_type, session_started, accoun
     else:
         billed_minutes, amount_charged = await asyncio.to_thread(
             db.record_session_usage, org_id, elapsed_minutes,
-            config.PREPAID_FREE_MINUTES_PER_SESSION, config.PREPAID_RATE_PER_HOUR)
+            config.PREPAID_FREE_MINUTES_PER_SESSION, config.PREPAID_RATE_PER_HOUR_CENTS)
     await asyncio.to_thread(
         db.log_session, org_id, host_conn.device_id, session_type, account_type,
         _iso(session_started), _iso(ended_at), elapsed_minutes, billed_minutes, amount_charged,
@@ -389,7 +389,7 @@ async def _handle_viewer(reader, writer, user, data):
         limit_seconds = plan.session_limit_seconds(
             user, config.TRIAL_SESSION_LIMIT_SECONDS, session_type,
             prepaid_free_minutes=config.PREPAID_FREE_MINUTES_PER_SESSION,
-            prepaid_rate_per_hour=config.PREPAID_RATE_PER_HOUR)
+            prepaid_rate_per_hour=config.PREPAID_RATE_PER_HOUR_CENTS)
 
     viewer = ViewerConn(writer, user["id"], device_id)
     host_conn.viewer = viewer
@@ -436,7 +436,7 @@ async def _handle_viewer(reader, writer, user, data):
         else:
             billed_minutes, amount_charged = await asyncio.to_thread(
                 db.record_session_usage, user["org_id"], elapsed_minutes,
-                config.PREPAID_FREE_MINUTES_PER_SESSION, config.PREPAID_RATE_PER_HOUR)
+                config.PREPAID_FREE_MINUTES_PER_SESSION, config.PREPAID_RATE_PER_HOUR_CENTS)
         await asyncio.to_thread(
             db.log_session, user["org_id"], device_id, session_type, account_type,
             _iso(session_started), _iso(ended_at), elapsed_minutes, billed_minutes, amount_charged,

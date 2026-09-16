@@ -693,7 +693,7 @@ class HostAgent:
         elif cmd == "overlay_pointer_style":
             if not self.pointer_overlay:
                 return
-            root.after(0, self.pointer_overlay.update_color, data.get("color"))
+            root.after(0, self.pointer_overlay.update_style, data.get("color"), data.get("size"))
 
     def launch_overlay(self, tk_root):
         try:

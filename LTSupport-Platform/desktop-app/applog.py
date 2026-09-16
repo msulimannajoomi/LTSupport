@@ -11,13 +11,13 @@ import datetime
 
 def _log_dir():
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    path = os.path.join(base, "LTSupport", "logs")
+    path = os.path.join(base, "VantagePoint", "logs")
     os.makedirs(path, exist_ok=True)
     return path
 
 
 def log_path():
-    return os.path.join(_log_dir(), "ltsupport.log")
+    return os.path.join(_log_dir(), "vantagepoint.log")
 
 
 class _LineFlushingWriter:
@@ -55,5 +55,5 @@ def init():
     writer = _LineFlushingWriter(path)
     sys.stdout = writer
     sys.stderr = writer
-    print(f"\n===== LTSupport starting {datetime.datetime.now().isoformat()} =====")
+    print(f"\n===== VantagePoint starting {datetime.datetime.now().isoformat()} =====")
     return path

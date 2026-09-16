@@ -44,7 +44,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         theme.apply()
-        self.title("LTSupport Platform")
+        self.title("VantagePoint")
         self.geometry("1100x780")
         self.minsize(900, 640)
         self.configure(fg_color=theme.BG)
@@ -94,7 +94,7 @@ class App(ctk.CTk):
         # non-"normal" role.
         is_observer = self.api.role != "normal"
         title_suffix = " (View Only)" if is_observer else ""
-        top.title(f"LTSupport Viewer — {device_id}{title_suffix}")
+        top.title(f"VantagePoint Viewer — {device_id}{title_suffix}")
         top.geometry("1200x800")
         # Calling state("zoomed") this early -- before the toplevel has actually been
         # drawn -- is unreliable on Windows and often gets silently ignored, leaving the

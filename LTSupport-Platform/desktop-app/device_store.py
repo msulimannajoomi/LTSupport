@@ -5,7 +5,7 @@ import uuid
 
 def _config_dir():
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    path = os.path.join(base, "LTSupport")
+    path = os.path.join(base, "VantagePoint")
     os.makedirs(path, exist_ok=True)
     return path
 

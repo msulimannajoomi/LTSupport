@@ -16,7 +16,7 @@ def build():
     icon_png = os.path.join(root, "app_icon.png")
 
     print("\n" + "=" * 50)
-    print("BUILDING LTSUPPORT DESKTOP APP")
+    print("BUILDING VANTAGEPOINT DESKTOP APP")
     print("=" * 50)
 
     # --onefile: bundle everything into one .exe
@@ -29,7 +29,7 @@ def build():
         "--onefile",
         "--windowed",
         f"--icon={icon_ico}",
-        "--name=LTSupport",
+        "--name=VantagePoint",
         "--collect-all=customtkinter",
         "--collect-all=pynput",
         f"--add-data={icon_ico};.",
@@ -43,7 +43,7 @@ def build():
         subprocess.check_call(cmd, cwd=root)
         print("\n" + "=" * 50)
         print("BUILD COMPLETE!")
-        print(f"Your executable is at: {os.path.join(root, 'dist', 'LTSupport.exe')}")
+        print(f"Your executable is at: {os.path.join(root, 'dist', 'VantagePoint.exe')}")
         print("=" * 50)
     except subprocess.CalledProcessError as e:
         print(f"Build failed with error: {e}")

@@ -59,6 +59,26 @@ def init_db():
     # isn't converted to an equivalent rupee amount, just carried over as-is.
     db.users.update_many({"balance_minutes": {"$exists": True}},
                           {"$rename": {"balance_minutes": "balance_rupees"}})
+    # One-time migration (2026-09-15): the prepaid balance moved from PKR
+    # (balance_rupees, rate PKR 5000/hour) to USD cents (balance_cents, rate
+    # PREPAID_RATE_PER_HOUR_CENTS = 500 = $5.00/hour, see config.py), to match what
+    # Stripe actually charges. Unlike the balance_minutes->balance_rupees rename
+    # above, the NUMBER has to change too, not just the field name -- multiplying by
+    # (500 / 5000) = 0.1 converts old rupees to new cents while keeping each
+    # account's hours-remaining identical to what it was before this ran (rupees /
+    # 5000 == cents / 500 for the same multiplier). The old rate (5000) is a fixed
+    # historical constant here, deliberately never read from config -- that value is
+    # what PREPAID_RATE_PER_HOUR meant on the day this migration was written, and
+    # must stay fixed even after config.py's rate changes again in the future for
+    # this pipeline to keep converting correctly for any account that still hasn't
+    # been touched by it yet.
+    db.users.update_many(
+        {"balance_rupees": {"$exists": True}},
+        [
+            {"$set": {"balance_cents": {"$multiply": ["$balance_rupees", 0.1]}}},
+            {"$unset": "balance_rupees"},
+        ],
+    )
 
 
 def now_iso():
@@ -92,7 +112,7 @@ def _session_view(doc):
 
 # ---- Users ----
 
-def create_user(org_id, org_name, email, phone, password_hash, account_type="trial", balance_rupees=0):
+def create_user(org_id, org_name, email, phone, password_hash, account_type="trial", balance_cents=0):
     _get_db().users.insert_one({
         "_id": org_id,
         "org_name": org_name,
@@ -100,7 +120,7 @@ def create_user(org_id, org_name, email, phone, password_hash, account_type="tri
         "phone": phone,
         "password_hash": password_hash,
         "account_type": account_type,
-        "balance_rupees": balance_rupees,
+        "balance_cents": balance_cents,
         "session_count": 0,
         "total_minutes_used": 0.0,
         "blocked": 0,
@@ -137,7 +157,7 @@ def set_blocked(org_id, blocked):
 
 def record_interview_usage(org_id, minutes_used):
     """Interview-mode sessions are never balance-restricted and never touch
-    balance_rupees -- tracked in entirely separate counters from normal/billable
+    balance_cents -- tracked in entirely separate counters from normal/billable
     sessions, per the requirement that interview usage counts separately."""
     _get_db().users.update_one(
         {"_id": org_id},
@@ -145,10 +165,10 @@ def record_interview_usage(org_id, minutes_used):
     )
 
 
-def add_balance(org_id, rupees):
-    """Manual top-up (stand-in for a real payment step, per the 'call to upgrade' model --
-    Paddle will replace this as the actual funding source later)."""
-    _get_db().users.update_one({"_id": org_id}, {"$inc": {"balance_rupees": rupees}})
+def add_balance(org_id, cents):
+    """Credits a prepaid balance -- USD cents (see config.PREPAID_RATE_PER_HOUR_CENTS
+    and the webhook in app.py, the only real caller: a Stripe payment confirmed)."""
+    _get_db().users.update_one({"_id": org_id}, {"$inc": {"balance_cents": cents}})
 
 
 def record_session_usage(org_id, minutes_used, free_minutes=0, rate_per_hour=1):
@@ -158,14 +178,14 @@ def record_session_usage(org_id, minutes_used, free_minutes=0, rate_per_hour=1):
     guarantees the session couldn't run past what free_minutes + balance covers) --
     time beyond that is billed by the HOUR, not the minute: any partial hour of overage
     rounds UP to a full hour (a session 61 minutes past the free window is billed as 2
-    full hours, not 1 hour and 1 minute), deducted from balance_rupees (never below 0).
+    full hours, not 1 hour and 1 minute), deducted from balance_cents (never below 0).
     Trial has no balance concept and postpaid is billed later, outside this system, so
     neither has anything to deduct. Returns (billed_minutes, amount_charged) for the
     caller to log alongside the session record (see log_session) -- billed_minutes here
     is the raw, un-rounded overage (for audit purposes); amount_charged already reflects
     the rounded-up hourly billing actually applied."""
     users = _get_db().users
-    user = users.find_one({"_id": org_id}, {"account_type": 1, "balance_rupees": 1})
+    user = users.find_one({"_id": org_id}, {"account_type": 1, "balance_cents": 1})
     if not user:
         return 0.0, 0.0
     update = {"$inc": {"session_count": 1, "total_minutes_used": minutes_used}}
@@ -175,8 +195,8 @@ def record_session_usage(org_id, minutes_used, free_minutes=0, rate_per_hour=1):
         billed_minutes = max(0.0, minutes_used - free_minutes)
         billed_hours = math.ceil(billed_minutes / 60) if billed_minutes > 0 else 0
         amount_charged = billed_hours * rate_per_hour
-        new_balance = max(0.0, user["balance_rupees"] - amount_charged)
-        update["$set"] = {"balance_rupees": new_balance}
+        new_balance = max(0.0, user["balance_cents"] - amount_charged)
+        update["$set"] = {"balance_cents": new_balance}
     users.update_one({"_id": org_id}, update)
     return billed_minutes, amount_charged
 
@@ -271,7 +291,7 @@ def list_payments_for_org(org_id, limit=50):
 # "admin", there is only ever one admin per org: the original account). Billing,
 # devices, and every other org-level record still belong to the org itself, never to
 # an individual member -- a member session just carries a different role alongside
-# the exact same org_id/account_type/balance_rupees/etc. every existing endpoint
+# the exact same org_id/account_type/balance_cents/etc. every existing endpoint
 # already reads.
 
 def _member_view(doc):

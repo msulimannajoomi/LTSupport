@@ -12,7 +12,7 @@ import config
 
 def _recordings_dir():
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    path = os.path.join(base, "LTSupport", config.RECORDINGS_DIR_NAME)
+    path = os.path.join(base, "VantagePoint", config.RECORDINGS_DIR_NAME)
     os.makedirs(path, exist_ok=True)
     return path
 

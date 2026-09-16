@@ -12,9 +12,9 @@ Pricing model for "normal" sessions:
 - trial: TRIAL_SESSION_LIMIT_SECONDS per session (config.py), capped at
   TRIAL_MAX_SESSIONS_PER_DAY sessions per calendar day (see db.count_sessions_today).
 - prepaid: every session gets PREPAID_FREE_MINUTES_PER_SESSION free, regardless of
-  current balance -- a PKR 0 balance still gets exactly that window, never zero. Time
-  beyond it is billed by the HOUR at PREPAID_RATE_PER_HOUR, deducted from
-  balance_rupees (see db.record_session_usage) -- any partial hour of overage rounds
+  current balance -- a $0 balance still gets exactly that window, never zero. Time
+  beyond it is billed by the HOUR at PREPAID_RATE_PER_HOUR_CENTS, deducted from
+  balance_cents (see db.record_session_usage) -- any partial hour of overage rounds
   UP to a full hour (there is no per-minute proration once billing starts). Both
   figures are per session, not a one-time allowance.
 - postpaid: unrestricted, billed separately outside this system.
@@ -68,7 +68,7 @@ def session_limit_seconds(user, trial_limit_seconds, session_type="normal",
     current balance can fully cover -- never a partial hour, since billing itself rounds
     any partial hour up to a full one (see db.record_session_usage), and letting the
     session drift even a minute into an hour the balance can't fully pay for would mean
-    charging more than the balance actually covers. A PKR 0 balance still gets exactly
+    charging more than the balance actually covers. A $0 balance still gets exactly
     the free window, never zero. Only a genuine postpaid account is unrestricted --
     see _effective_account_type for why anything unrecognized is treated as trial
     instead."""
@@ -78,7 +78,7 @@ def session_limit_seconds(user, trial_limit_seconds, session_type="normal",
     if account_type == "trial":
         return trial_limit_seconds
     if account_type == "prepaid":
-        affordable_hours = math.floor(max(0.0, user["balance_rupees"]) / prepaid_rate_per_hour)
+        affordable_hours = math.floor(max(0.0, user["balance_cents"]) / prepaid_rate_per_hour)
         return prepaid_free_minutes * 60 + affordable_hours * 3600
     return None
 

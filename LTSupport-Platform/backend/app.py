@@ -1,11 +1,12 @@
 import asyncio
 import datetime
-import hashlib
-import hmac
 import json
 import re
+import smtplib
+from email.mime.text import MIMEText
 
 import requests
+import stripe
 from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -18,7 +19,9 @@ import config
 import plan
 import relay
 
-app = FastAPI(title="LTSupport Platform API")
+stripe.api_key = config.STRIPE_API_KEY
+
+app = FastAPI(title="VantagePoint Platform API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -68,6 +71,14 @@ class VerifyPeerPayload(BaseModel):
     peer_token: str
 
 
+class UpgradeRequestPayload(BaseModel):
+    # See /api/billing/request-upgrade -- the interim stopgap while Stripe's own
+    # account activation is still pending (see config.py's SMTP block).
+    org_id: str
+    org_name: str = ""
+    customer_email: str
+
+
 class MemberLoginPayload(BaseModel):
     username: str
     password: str
@@ -89,7 +100,14 @@ def _account_view(user, token=None):
         "org_id": user["org_id"],
         "org_name": user["org_name"],
         "account_type": user["account_type"],
-        "balance_rupees": user["balance_rupees"],
+        "balance_cents": user["balance_cents"],
+        # Computed here, not on the client -- the desktop app would otherwise need
+        # its own copy of PREPAID_RATE_PER_HOUR_CENTS to do this math, which could
+        # silently drift out of sync with this backend's actual rate. Meaningless
+        # for trial/postpaid (no balance concept either way), but harmless to
+        # include unconditionally -- balance_cents is just 0 for both.
+        "hours_remaining": round(user["balance_cents"] / config.PREPAID_RATE_PER_HOUR_CENTS, 2),
+        "hours_consumed": round(user["total_minutes_used"] / 60, 2),
         "session_count": user["session_count"],
         "total_minutes_used": user["total_minutes_used"],
         "blocked": bool(user["blocked"]),
@@ -119,24 +137,6 @@ def _require_admin(user):
         raise HTTPException(403, "Only an account admin can do this.")
 
 
-def _verify_paddle_signature(raw_body: bytes, signature_header: str) -> bool:
-    """Paddle signs each webhook as "Paddle-Signature: ts=<unix-ts>;h1=<hex-hmac>",
-    the hash being HMAC-SHA256 over "<ts>:<raw-body>" using the destination's own
-    secret (Paddle dashboard -> Developer Tools -> Notifications). Verifying this is
-    the only thing standing between a real payment and anyone who finds this URL and
-    POSTs a fake "payment completed" body to credit their own account for free -- so a
-    missing/misconfigured secret must fail closed (reject), never fall through as
-    trusted."""
-    if not config.PADDLE_WEBHOOK_SECRET or not signature_header:
-        return False
-    try:
-        parts = dict(p.split("=", 1) for p in signature_header.split(";"))
-        ts, h1 = parts["ts"], parts["h1"]
-    except Exception:
-        return False
-    signed_payload = f"{ts}:".encode() + raw_body
-    computed = hmac.new(config.PADDLE_WEBHOOK_SECRET.encode(), signed_payload, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(computed, h1)
 
 
 @app.on_event("startup")
@@ -279,72 +279,91 @@ def me(authorization: str = Header(default="")):
 
 @app.post("/api/billing/checkout")
 def create_checkout(authorization: str = Header(default="")):
-    """Starts a Paddle purchase for prepaid hours -- one button, no separate "upgrade
-    to prepaid" step and no quantity field of our own first: Paddle's own hosted
-    checkout UI is what actually lets the customer pick how many hours (and see the
-    resulting price) before paying, since PADDLE_PRICE_ID's own quantity range allows
-    it. This just opens a transaction at the price's minimum quantity as a starting
-    point -- Paddle's checkout can adjust it upward from there. Returns a hosted
-    checkout URL for the desktop app to open in the system browser; balance is only
-    actually credited later, once Paddle confirms payment via /api/webhooks/paddle
-    (never here -- this endpoint only starts the purchase, it doesn't know yet
-    whether it'll succeed). Available from trial or prepaid alike -- a trial account
-    is upgraded to prepaid automatically by the webhook the moment payment succeeds,
-    so there's nothing to do here first. Admin-only (RBAC) -- billing is explicitly
-    one of the two things a "normal" team-member role can't touch."""
+    """Starts a Stripe purchase for prepaid hours -- one button, no separate "upgrade
+    to prepaid" step and no quantity field of our own first: Stripe's own hosted
+    Checkout page is what actually lets the customer pick how many hours (and see the
+    resulting price) before paying, via adjustable_quantity below. This just opens the
+    session at STRIPE_STARTING_QUANTITY as a starting point -- Stripe's checkout can
+    adjust it upward from there. Returns a hosted checkout URL for the desktop app to
+    open in the system browser; balance is only actually credited later, once Stripe
+    confirms payment via /api/webhooks/stripe (never here -- this endpoint only starts
+    the purchase, it doesn't know yet whether it'll succeed). Available from trial or
+    prepaid alike -- a trial account is upgraded to prepaid automatically by the
+    webhook the moment payment succeeds, so there's nothing to do here first.
+    Admin-only (RBAC) -- billing is explicitly one of the two things a "normal"
+    team-member role can't touch."""
     user = _auth_user(authorization)
     _require_admin(user)
     try:
-        resp = requests.post(
-            f"{config.PADDLE_API_BASE}/transactions",
-            headers={"Authorization": f"Bearer {config.PADDLE_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "items": [{"price_id": config.PADDLE_PRICE_ID, "quantity": config.PADDLE_STARTING_QUANTITY}],
-                # Echoed back on every webhook for this transaction -- this is how the
-                # webhook handler knows which account to credit, since Paddle has no
-                # other concept of "this org's account" of its own.
-                "custom_data": {"org_id": user["org_id"]},
-            },
-            timeout=15,
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            line_items=[{
+                "price_data": {
+                    "currency": config.STRIPE_CURRENCY,
+                    "product_data": {"name": "VantagePoint Prepaid Hours"},
+                    "unit_amount": config.STRIPE_UNIT_AMOUNT_CENTS,
+                },
+                "quantity": config.STRIPE_STARTING_QUANTITY,
+                "adjustable_quantity": {"enabled": True, "minimum": 1, "maximum": 500},
+            }],
+            success_url=config.STRIPE_SUCCESS_URL,
+            cancel_url=config.STRIPE_CANCEL_URL,
+            # Echoed back on the checkout.session.completed webhook -- this is how the
+            # webhook handler knows which account to credit, since Stripe has no other
+            # concept of "this org's account" of its own.
+            metadata={"org_id": user["org_id"]},
         )
-    except requests.RequestException:
-        raise HTTPException(503, "Could not reach the payment provider. Please try again.")
-    if resp.status_code >= 400:
-        detail = resp.json().get("error", {}).get("detail", "Could not start checkout.")
-        raise HTTPException(502, detail)
-    checkout_url = resp.json().get("data", {}).get("checkout", {}).get("url")
-    if not checkout_url:
+    except stripe.error.StripeError as e:
+        raise HTTPException(502, getattr(e, "user_message", None) or "Could not start checkout.")
+    if not session.url:
         raise HTTPException(502, "Payment provider did not return a checkout link.")
-    return {"checkout_url": checkout_url}
+    return {"checkout_url": session.url}
 
 
-@app.post("/api/webhooks/paddle")
-async def paddle_webhook(request: Request):
-    """Paddle calls this once a transaction's status changes -- this credits balance
-    ONLY on transaction.completed, and ONLY once per transaction id (db.log_payment is
-    the idempotency guard: Paddle delivers webhooks at-least-once, so the same event
-    can legitimately arrive more than once, and this must not credit twice for it).
-    Must read the raw body for signature verification before any JSON parsing --
-    re-serializing a parsed-then-rebuilt body would not byte-for-byte match what
-    Paddle actually signed."""
+@app.post("/api/webhooks/stripe")
+async def stripe_webhook(request: Request):
+    """Stripe calls this once a checkout session's status changes -- this credits
+    balance ONLY on checkout.session.completed, and ONLY once per session id
+    (db.log_payment is the idempotency guard: Stripe delivers webhooks at-least-once,
+    so the same event can legitimately arrive more than once, and this must not
+    credit twice for it). stripe.Webhook.construct_event both parses AND verifies the
+    signature from the raw body -- a missing/misconfigured secret or bad signature
+    must fail closed (reject), never fall through as trusted."""
     raw_body = await request.body()
-    if not _verify_paddle_signature(raw_body, request.headers.get("paddle-signature", "")):
+    if not config.STRIPE_WEBHOOK_SECRET:
         raise HTTPException(401, "Invalid webhook signature.")
-    event = json.loads(raw_body)
-    if event.get("event_type") == "transaction.completed":
-        data = event.get("data", {})
-        transaction_id = data.get("id")
-        org_id = (data.get("custom_data") or {}).get("org_id")
-        quantity = sum(item.get("quantity", 0) for item in (data.get("items") or []))
-        if transaction_id and org_id and quantity > 0:
-            totals = (data.get("details") or {}).get("totals") or {}
-            if db.log_payment(transaction_id, org_id, quantity, totals.get("grand_total"),
-                               data.get("currency_code", ""), "completed", db.now_iso()):
-                # quantity * PREPAID_RATE_PER_HOUR, not whatever Paddle actually
-                # charged -- that's the USD-denominated card charge; PKR balance
-                # credited is purely OUR unit definition (1 unit = 1 hour = this many
-                # rupees), unrelated to currency conversion.
-                db.add_balance(org_id, quantity * config.PREPAID_RATE_PER_HOUR)
+    try:
+        event = stripe.Webhook.construct_event(
+            raw_body, request.headers.get("stripe-signature", ""), config.STRIPE_WEBHOOK_SECRET)
+    except (ValueError, stripe.error.SignatureVerificationError):
+        raise HTTPException(401, "Invalid webhook signature.")
+    if event["type"] == "checkout.session.completed":
+        # .to_dict() is required here -- construct_event returns a StripeObject, whose
+        # __getattr__ deliberately raises on dict methods like .get() (they'd otherwise
+        # collide with real Stripe field names of the same name), so calling .get(...)
+        # directly on it crashes instead of just returning None.
+        session = event["data"]["object"].to_dict()
+        session_id = session.get("id")
+        org_id = (session.get("metadata") or {}).get("org_id")
+        quantity = 0
+        if session_id and org_id:
+            try:
+                # .to_dict() here too -- list_line_items returns a ListObject (and each
+                # item a StripeObject), neither of which support .get() (see the
+                # comment above on `session`).
+                line_items = stripe.checkout.Session.list_line_items(session_id, limit=10).to_dict()
+                quantity = sum(li.get("quantity", 0) or 0 for li in line_items.get("data", []))
+            except stripe.error.StripeError:
+                quantity = 0
+        if session_id and org_id and quantity > 0:
+            if db.log_payment(session_id, org_id, quantity, session.get("amount_total"),
+                               session.get("currency", ""), "completed", db.now_iso()):
+                # quantity * PREPAID_RATE_PER_HOUR_CENTS -- currently the same number
+                # as what Stripe actually charged per hour (both $5.00/hour), but
+                # computed from OUR OWN rate constant regardless, not derived from
+                # session.get("amount_total") -- see config.py's comment on why
+                # these are deliberately kept as two separate constants.
+                db.add_balance(org_id, quantity * config.PREPAID_RATE_PER_HOUR_CENTS)
                 # A successful payment IS the upgrade now -- no separate "Upgrade to
                 # Prepaid" step for the user to click first (see create_checkout).
                 # Never touches an account that's already prepaid/postpaid.
@@ -352,7 +371,7 @@ async def paddle_webhook(request: Request):
                 if buyer and buyer["account_type"] == "trial":
                     db.set_account_type(org_id, "prepaid")
         else:
-            print(f"[Paddle webhook] transaction.completed missing expected fields: {data}")
+            print(f"[Stripe webhook] checkout.session.completed missing expected fields: {session}")
     return {"ok": True}
 
 
@@ -361,6 +380,48 @@ def list_payments(authorization: str = Header(default="")):
     user = _auth_user(authorization)
     _require_admin(user)
     return {"payments": db.list_payments_for_org(user["org_id"])}
+
+
+@app.post("/api/billing/request-upgrade")
+def request_upgrade(payload: UpgradeRequestPayload):
+    """Interim stopgap for the Buy Hours/Upgrade to Prepaid button while the live
+    Stripe account is still completing its own activation (see config.py's SMTP
+    block) -- emails config.UPGRADE_REQUEST_EMAIL instead of starting a real
+    checkout. Reached from a plain static page opened in the system browser (see
+    request-upgrade.html), not the authenticated desktop app itself, so there's no
+    session token to check here -- org_id/org_name are just whatever that page's own
+    URL query params carried (set by billing_view.py from its already-logged-in
+    state before opening the page), informational only, not a security boundary.
+    Sending a request email isn't a sensitive action worth gating behind auth the
+    browser has no way to provide anyway."""
+    customer_email = payload.customer_email.strip()
+    if not EMAIL_RE.match(customer_email):
+        raise HTTPException(400, "Please enter a valid email address.")
+    if not config.SMTP_USERNAME or not config.SMTP_PASSWORD:
+        raise HTTPException(503, "Email isn't configured on the server yet. Please try again later.")
+
+    body = (
+        f"Organization: {payload.org_name or '(name not set)'}\n"
+        f"Org ID: {payload.org_id}\n"
+        f"Contact email provided: {customer_email}\n\n"
+        f"They want to upgrade their account to Prepaid."
+    )
+    msg = MIMEText(body)
+    msg["Subject"] = f"Upgrade request from {payload.org_name or payload.org_id}"
+    msg["From"] = config.SMTP_USERNAME
+    msg["To"] = config.UPGRADE_REQUEST_EMAIL
+    # So a reply from the inbox this lands in goes straight back to the customer who
+    # asked, not to the SMTP sending account.
+    msg["Reply-To"] = customer_email
+
+    try:
+        with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=10) as server:
+            server.starttls()
+            server.login(config.SMTP_USERNAME, config.SMTP_PASSWORD)
+            server.send_message(msg)
+    except Exception:
+        raise HTTPException(502, "Could not send the request email. Please try again.")
+    return {"ok": True}
 
 
 @app.post("/api/session/verify-peer")
@@ -444,7 +505,7 @@ def session_check(payload: SessionCheckPayload, authorization: str = Header(defa
     limit_seconds = plan.session_limit_seconds(
         user, config.TRIAL_SESSION_LIMIT_SECONDS, session_type,
         prepaid_free_minutes=config.PREPAID_FREE_MINUTES_PER_SESSION,
-        prepaid_rate_per_hour=config.PREPAID_RATE_PER_HOUR)
+        prepaid_rate_per_hour=config.PREPAID_RATE_PER_HOUR_CENTS)
     # user["blocked"] was already handled above, so the only way this can still be
     # False here is a trial account out of sessions for today.
     message = None if allowed else plan.trial_sessions_exhausted_message(config.TRIAL_MAX_SESSIONS_PER_DAY)
@@ -494,7 +555,7 @@ def session_report(payload: SessionReportPayload, authorization: str = Header(de
         db.record_interview_usage(user["org_id"], minutes)
     else:
         billed_minutes, amount_charged = db.record_session_usage(
-            user["org_id"], minutes, config.PREPAID_FREE_MINUTES_PER_SESSION, config.PREPAID_RATE_PER_HOUR)
+            user["org_id"], minutes, config.PREPAID_FREE_MINUTES_PER_SESSION, config.PREPAID_RATE_PER_HOUR_CENTS)
     db.log_session(user["org_id"], payload.device_id, session_type, user["account_type"],
                     started_at.isoformat(), ended_at.isoformat(), minutes, billed_minutes, amount_charged,
                     "local_session_ended", member_username=user.get("member_username"))

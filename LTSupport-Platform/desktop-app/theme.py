@@ -1,19 +1,22 @@
 import customtkinter as ctk
 
-BG = "#FAF6EC"
+# "Slate & Indigo" -- VantagePoint's brand palette (2026-09-15 rebrand from the old
+# warm gold/amber "LTSupport" theme). Every color below is used app-wide via this one
+# module, so changing it here re-themes every screen consistently.
+BG = "#F8FAFC"
 CARD = "#FFFFFF"
-CARD_HOVER = "#FBF3DC"
-ACCENT = "#EAB308"
-ACCENT_HOVER = "#CA8A04"
-SUCCESS = "#22C55E"
-SUCCESS_HOVER = "#16A34A"
-WARNING = "#FB923C"
-WARNING_HOVER = "#EA7C1C"
-DANGER = "#DC2626"
-DANGER_HOVER = "#B91C1C"
-TEXT = "#1F2937"
-TEXT_MUTED = "#78716C"
-BORDER = "#EDE4CC"
+CARD_HOVER = "#F1F5F9"
+ACCENT = "#6366F1"
+ACCENT_HOVER = "#4F46E5"
+SUCCESS = "#10B981"
+SUCCESS_HOVER = "#059669"
+WARNING = "#F59E0B"
+WARNING_HOVER = "#D97706"
+DANGER = "#EF4444"
+DANGER_HOVER = "#DC2626"
+TEXT = "#0F172A"
+TEXT_MUTED = "#64748B"
+BORDER = "#E2E8F0"
 
 FONT = "Segoe UI"
 

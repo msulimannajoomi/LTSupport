@@ -39,7 +39,7 @@ def show_copyable_id(parent, title, label_text, value, note_text=""):
 
     copy_btn = ctk.CTkButton(row, text="Copy", width=80, height=42, corner_radius=8,
                               fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
-                              text_color="#0f172a", command=do_copy)
+                              text_color="white", command=do_copy)
     copy_btn.pack(side="left")
 
     if note_text:
@@ -58,11 +58,13 @@ def show_notice(parent, title, message, kind="info", primary_text="OK", on_prima
     """A themed modal notice -- used in place of a plain OS messagebox for things that
     matter more (a trial session ending, an upgrade prompt), so it actually looks like
     part of this app instead of a generic system dialog. `kind` picks the accent color
-    down the left edge and on the primary button: "info" (gold accent), "warning"
-    (orange), "danger" (red)."""
+    down the left edge and on the primary button: "info" (indigo accent), "warning"
+    (amber), "danger" (red)."""
     accent = {"info": theme.ACCENT, "warning": theme.WARNING, "danger": theme.DANGER}.get(kind, theme.ACCENT)
     hover = {"info": theme.ACCENT_HOVER, "warning": theme.WARNING_HOVER, "danger": theme.DANGER_HOVER}.get(kind, theme.ACCENT_HOVER)
-    button_text_color = "white" if kind == "danger" else "#0f172a"
+    # Amber (warning) is light enough for dark text to stay readable; indigo (info) and
+    # red (danger) are both dark/saturated enough that only white text has real contrast.
+    button_text_color = "#0f172a" if kind == "warning" else "white"
 
     top = ctk.CTkToplevel(parent)
     top.title(title)

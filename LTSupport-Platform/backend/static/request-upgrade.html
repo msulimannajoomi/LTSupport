@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Request an Upgrade — VantagePoint</title>
+<style>
+  body { margin:0; font-family:"Segoe UI",Arial,sans-serif; background:#F8FAFC; color:#0F172A;
+         display:flex; align-items:center; justify-content:center; min-height:100vh; padding:24px;
+         box-sizing:border-box; }
+  .card { background:#FFFFFF; border:1px solid #E2E8F0; border-radius:16px; padding:40px; max-width:440px;
+          width:100%; box-shadow:0 4px 24px rgba(15,23,42,0.06); box-sizing:border-box; }
+  h1 { font-size:22px; margin:0 0 8px; color:#6366F1; }
+  p { font-size:14px; color:#64748B; line-height:1.5; margin:0 0 16px; }
+  .org { background:#F1F5F9; border-radius:8px; padding:10px 14px; font-size:13px; color:#334155;
+         margin-bottom:20px; }
+  label { display:block; font-size:12px; font-weight:600; letter-spacing:0.03em; color:#64748B;
+          margin-bottom:6px; text-transform:uppercase; }
+  input[type=email] { width:100%; box-sizing:border-box; padding:11px 14px; border:1px solid #E2E8F0;
+                       border-radius:8px; font-size:14px; margin-bottom:18px; }
+  input[type=email]:focus { outline:none; border-color:#6366F1; }
+  button { width:100%; padding:13px; border:none; border-radius:8px; background:#6366F1; color:#FFFFFF;
+           font-size:14px; font-weight:600; cursor:pointer; }
+  button:hover { background:#4F46E5; }
+  button:disabled { background:#C7D2FE; cursor:default; }
+  .status { font-size:13px; margin-top:14px; line-height:1.5; }
+  .status.error { color:#EF4444; }
+  .status.success { color:#10B981; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Request an Upgrade</h1>
+    <p>Enter your email below and we'll reach out to get your account upgraded to Prepaid.
+       Requests go straight to our team at sulimanmuhammad68@gmail.com.</p>
+    <div class="org" id="orgInfo"></div>
+    <label for="email">Your email</label>
+    <input type="email" id="email" placeholder="you@example.com" required>
+    <button id="sendBtn" onclick="sendRequest()">Send Request</button>
+    <div class="status" id="status"></div>
+  </div>
+
+<script>
+  const params = new URLSearchParams(window.location.search);
+  const orgId = params.get("org_id") || "";
+  const orgName = params.get("org_name") || "";
+  document.getElementById("orgInfo").textContent =
+    "Requesting for: " + (orgName || "(unnamed organization)") + " — " + orgId;
+
+  function sendRequest() {
+    const emailInput = document.getElementById("email");
+    const btn = document.getElementById("sendBtn");
+    const status = document.getElementById("status");
+    const email = emailInput.value.trim();
+    if (!email) {
+      status.textContent = "Please enter your email address.";
+      status.className = "status error";
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Sending…";
+    status.textContent = "";
+    status.className = "status";
+
+    fetch("/api/billing/request-upgrade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ org_id: orgId, org_name: orgName, customer_email: email }),
+    })
+      .then(async (resp) => {
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          throw new Error(data.detail || "Something went wrong. Please try again.");
+        }
+        return resp.json();
+      })
+      .then(() => {
+        status.textContent = "Request sent! We'll be in touch shortly.";
+        status.className = "status success";
+        btn.textContent = "Sent";
+      })
+      .catch((err) => {
+        status.textContent = err.message;
+        status.className = "status error";
+        btn.disabled = false;
+        btn.textContent = "Send Request";
+      });
+  }
+</script>
+</body>
+</html>

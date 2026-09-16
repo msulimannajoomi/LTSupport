@@ -18,7 +18,7 @@ class SignupView(ctk.CTkFrame):
         inner.pack(padx=48, pady=40)
 
         ctk.CTkLabel(inner, text="Create Account", font=theme.h1(), text_color=theme.TEXT).pack(anchor="w")
-        ctk.CTkLabel(inner, text="Set up your organization's LTSupport account", font=theme.body(),
+        ctk.CTkLabel(inner, text="Set up your organization's VantagePoint account", font=theme.body(),
                      text_color=theme.TEXT_MUTED).pack(anchor="w", pady=(4, 24))
 
         ctk.CTkLabel(inner, text="ORGANIZATION NAME", font=theme.small(), text_color=theme.TEXT_MUTED).pack(anchor="w")
@@ -54,7 +54,7 @@ class SignupView(ctk.CTkFrame):
 
         self.submit_btn = ctk.CTkButton(inner, text="Create Account", width=340, height=42, corner_radius=8,
                                          fg_color=theme.SUCCESS, hover_color=theme.SUCCESS_HOVER,
-                                         text_color="#0f172a", font=theme.h3(), command=self.submit)
+                                         text_color="white", font=theme.h3(), command=self.submit)
         self.submit_btn.pack(pady=(12, 20))
 
         bottom = ctk.CTkFrame(inner, fg_color="transparent")

@@ -153,7 +153,7 @@ class DashboardView(ctk.CTkFrame):
         elif api.account_type == "trial":
             text = f"TRIAL PLAN — 10-min sessions, 3/day · {api.session_count} session(s) so far."
         elif api.account_type == "prepaid":
-            text = f"PREPAID PLAN — PKR {api.balance_rupees:,.0f} remaining."
+            text = f"PREPAID PLAN — ${api.balance_cents / 100:,.2f} ({api.hours_remaining:.2f}h) remaining."
         else:
             text = f"POSTPAID PLAN — {api.session_count} session(s) so far."
 
@@ -175,7 +175,7 @@ class DashboardView(ctk.CTkFrame):
                      text_color=theme.TEXT_MUTED, wraplength=280, justify="left").pack(anchor="w", pady=(8, 16))
         if not disabled:
             ctk.CTkButton(inner, text=title, height=44, corner_radius=8, fg_color=color,
-                          hover_color=hover_color or color, text_color="#0f172a", font=theme.h3(),
+                          hover_color=hover_color or color, text_color="white", font=theme.h3(),
                           command=command).pack(fill="x")
         return frame
 
@@ -210,7 +210,7 @@ class DashboardView(ctk.CTkFrame):
         self.join_entry.pack(fill="x", pady=(4, 12))
         self.join_entry.bind("<Return>", lambda e: self._join_manual())
         ctk.CTkButton(inner, text="Connect", height=38, corner_radius=8, fg_color=theme.ACCENT,
-                      hover_color=theme.ACCENT_HOVER, text_color="#0f172a", font=theme.h3(),
+                      hover_color=theme.ACCENT_HOVER, text_color="white", font=theme.h3(),
                       command=self._join_manual).pack(fill="x")
         return frame
 
@@ -314,7 +314,7 @@ class DashboardView(ctk.CTkFrame):
 
             connect_btn = ctk.CTkButton(inner, text="Connect", width=100, height=32, corner_radius=8,
                                          fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
-                                         text_color="#0f172a", font=theme.small(), command=_connect)
+                                         text_color="white", font=theme.small(), command=_connect)
             connect_btn.configure(state="normal" if can_connect else "disabled")
             connect_btn.pack(side="right")
 

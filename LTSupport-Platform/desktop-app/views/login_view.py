@@ -23,7 +23,7 @@ class LoginView(ctk.CTkFrame):
         inner = ctk.CTkFrame(card, fg_color="transparent")
         inner.pack(padx=48, pady=48)
 
-        ctk.CTkLabel(inner, text="LTSupport", font=theme.h1(), text_color=theme.ACCENT).pack(anchor="w")
+        ctk.CTkLabel(inner, text="VantagePoint", font=theme.h1(), text_color=theme.ACCENT).pack(anchor="w")
         ctk.CTkLabel(inner, text="Sign in to manage and access your devices", font=theme.body(),
                      text_color=theme.TEXT_MUTED).pack(anchor="w", pady=(4, 12))
 
@@ -78,7 +78,7 @@ class LoginView(ctk.CTkFrame):
 
         self.submit_btn = ctk.CTkButton(inner, text="Log In", width=320, height=42, corner_radius=8,
                                          fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
-                                         text_color="#0f172a", font=theme.h3(), command=self.submit)
+                                         text_color="white", font=theme.h3(), command=self.submit)
         self.submit_btn.pack(pady=(12, 20))
 
         bottom = ctk.CTkFrame(inner, fg_color="transparent")
@@ -98,13 +98,13 @@ class LoginView(ctk.CTkFrame):
         if mode == "admin":
             self.id_label.configure(text="ORGANIZATION ID")
             self.admin_mode_btn.configure(fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
-                                           text_color="#0f172a")
+                                           text_color="white")
             self.member_mode_btn.configure(fg_color=theme.CARD_HOVER, hover_color=theme.BORDER,
                                             text_color=theme.TEXT)
         else:
             self.id_label.configure(text="USERNAME")
             self.member_mode_btn.configure(fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
-                                            text_color="#0f172a")
+                                            text_color="white")
             self.admin_mode_btn.configure(fg_color=theme.CARD_HOVER, hover_color=theme.BORDER,
                                            text_color=theme.TEXT)
 
