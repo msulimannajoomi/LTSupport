@@ -10,8 +10,8 @@ RELAY_PORT = 7000
 # the backend itself points Stripe at).
 PUBLIC_WEB_BASE_URL = "https://testingpaddletl.najoomi.ai"
 
-# Host mic -> viewer speaker. Raw PCM16 mono, no compression -- both sides must agree
-# on this format since audio frames carry no header of their own.
+# Host system audio -> viewer speaker. Raw PCM16 mono, no compression -- both sides
+# must agree on this format since audio frames carry no header of their own.
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
 AUDIO_BLOCK_SIZE = 1024  # samples per chunk sent (~64ms at 16kHz)

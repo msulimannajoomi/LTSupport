@@ -32,6 +32,7 @@ def build():
         "--name=VantagePoint",
         "--collect-all=customtkinter",
         "--collect-all=pynput",
+        "--collect-all=pyaudiowpatch",
         f"--add-data={icon_ico};.",
         f"--add-data={icon_png};.",
         app_entry,

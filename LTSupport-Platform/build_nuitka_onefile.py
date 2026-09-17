@@ -60,6 +60,13 @@ def build():
         "--include-package-data=_sounddevice_data",
         "--include-package=mss",
         "--include-package=pyautogui",
+        # pyaudiowpatch's __init__.py loads its native extension via a top-level
+        # `import _portaudiowpatch` (a standalone .pyd next to site-packages, not
+        # nested inside the pyaudiowpatch package folder) -- explicit here for the
+        # same reason as _sounddevice_data above, rather than trusting Nuitka's
+        # plain import-following to catch a module imported inside a try/except.
+        "--include-package=pyaudiowpatch",
+        "--include-module=_portaudiowpatch",
         "--assume-yes-for-downloads",
         app_entry,
     ]

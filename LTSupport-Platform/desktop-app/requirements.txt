@@ -7,3 +7,4 @@ pynput
 sounddevice
 opencv-python
 numpy
+PyAudioWPatch

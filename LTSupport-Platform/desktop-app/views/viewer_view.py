@@ -92,8 +92,9 @@ class ViewerView:
 
         self.rec_label = ctk.CTkLabel(control_bar, text="● REC", font=theme.small(), text_color=theme.DANGER)
 
-        # Always available, in both Normal and Interview Mode -- the host's mic plays
-        # for the viewer in both now, so muting means "stop listening" (Normal) or also
+        # Always available, in both Normal and Interview Mode -- the host's system
+        # audio plays for the viewer in both now, so muting means "stop listening"
+        # (Normal) or also
         # "stop sending my own mic" (Interview, the only mode with one to send). See
         # toggle_mute and the muted check in viewer_agent.py's _recv_loop/_mic_loop.
         self.mute_btn = ctk.CTkButton(control_bar, text="🎤 Mute", width=100, height=36, corner_radius=8,

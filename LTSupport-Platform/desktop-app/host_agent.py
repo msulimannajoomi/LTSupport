@@ -118,6 +118,14 @@ class HostAgent:
         self.keyboard = KeyboardController()
         self._audio_active = False
         self._playback_stream = None
+        # Host's own system/speaker output (e.g. a YouTube video playing on the host)
+        # is what gets sent to the viewer -- see _audio_loop/_system_audio_loop; the
+        # host's own mic is not captured/sent anywhere at all. Queue is (re)created
+        # fresh each time _audio_loop starts; None means "not currently capturing"
+        # (either not started yet, or WASAPI loopback failed to open on this
+        # machine), in which case _audio_loop just has nothing to send.
+        self._system_audio_queue = None
+        self._system_audio_leftover = None
         self.local_server = None
         self._limit_timer = None
         self._session_started_at = None
@@ -130,7 +138,7 @@ class HostAgent:
         self.last_recording_paths = None
         self._record_queue = None
         self._record_thread = None
-        # Screen capture and mic audio each run on their own thread but write to the same
+        # Screen capture and system audio each run on their own thread but write to the same
         # socket -- without a lock, concurrent sendall() calls can interleave and corrupt
         # the frame stream, which looks exactly like a random, unexplained disconnect on
         # the receiving end. Most visible in Interview Mode, where both are active at once.
@@ -276,8 +284,8 @@ class HostAgent:
         self._session_started_at = time.time()
         self._usage_reported = False
         self._start_recording()
-        # Host mic -> viewer runs in both Normal and Interview Mode -- see the matching
-        # comment in _recv_loop's TYPE_VIEWER_JOINED branch (the relay-mode path).
+        # Host system audio -> viewer runs in both Normal and Interview Mode -- see the
+        # matching comment in _recv_loop's TYPE_VIEWER_JOINED branch (the relay-mode path).
         self._audio_active = True
         threading.Thread(target=self._audio_loop, daemon=True).start()
         threading.Thread(target=self._capture_loop, daemon=True).start()
@@ -512,39 +520,138 @@ class HostAgent:
         self._frame_ack_semaphore.release()
 
     def _audio_loop(self):
+        """Sends the host's own system/speaker output (a YouTube video, music, any
+        other app's audio) to the viewer -- NOT the host's mic. Explicitly not
+        mixed with the mic (a mixed version existed briefly and was deliberately
+        reverted): this channel is system audio only now. The host's own mic isn't
+        captured/sent anywhere in this codebase at all any more."""
         try:
-            import sounddevice as sd
+            import numpy as np
         except Exception as e:
-            print(f"[Audio] sounddevice unavailable: {e}")
+            print(f"[Audio] numpy unavailable: {e}")
             return
 
-        try:
-            stream = sd.InputStream(
-                samplerate=config.AUDIO_SAMPLE_RATE,
-                channels=config.AUDIO_CHANNELS,
-                dtype="int16",
-                blocksize=config.AUDIO_BLOCK_SIZE,
-            )
-            stream.start()
-        except Exception as e:
-            print(f"[Audio] Could not open microphone: {e}")
-            return
+        # Fresh queue/leftover-buffer for this run -- _system_audio_loop (its own
+        # thread, started below) pushes captured chunks in; _pull_system_audio drains
+        # and converts them below.
+        self._system_audio_queue = queue.Queue()
+        self._system_audio_leftover = np.array([], dtype="int16")
+        threading.Thread(target=self._system_audio_loop, daemon=True).start()
 
         try:
             while self.running and self._audio_active:
-                data, _ = stream.read(config.AUDIO_BLOCK_SIZE)
-                pcm_bytes = data.tobytes()
+                chunk = self._pull_system_audio(config.AUDIO_BLOCK_SIZE)
+                if chunk is None:
+                    # System audio capture hasn't started yet (or failed outright) --
+                    # nothing to send this round. Keep pacing at roughly real-time
+                    # rather than spinning, in case it recovers (e.g. still opening).
+                    time.sleep(config.AUDIO_BLOCK_SIZE / config.AUDIO_SAMPLE_RATE)
+                    continue
+                pcm_bytes = chunk.tobytes()
                 self._send(proto.TYPE_AUDIO_FRAME, pcm_bytes)
                 if self.recorder:
                     self.recorder.write_host_audio(pcm_bytes)
         except Exception:
             pass
         finally:
+            self._system_audio_queue = None
+
+    def _system_audio_loop(self):
+        """Captures whatever's playing through the host's own speakers (a YouTube
+        video, music, any other app's audio) via WASAPI loopback, so the viewer can
+        hear it. sounddevice's WASAPI bindings don't expose PortAudio's loopback flag
+        (verified against the installed version, not assumed), so this uses
+        PyAudioWPatch instead, a PortAudio fork built specifically to add it. Pushes
+        raw (bytes, native_rate, native_channels) chunks into
+        self._system_audio_queue for _pull_system_audio to downmix/resample down to
+        config.AUDIO_SAMPLE_RATE mono -- WASAPI loopback has to be opened at the
+        device's own native format, never an arbitrary one. Any failure here (no
+        PyAudioWPatch, no WASAPI device, anything) just leaves the queue without a
+        live producer -- _audio_loop's own None-check already handles that (nothing
+        gets sent to the viewer at all until/unless this recovers)."""
+        try:
+            import pyaudiowpatch as pyaudio
+        except Exception as e:
+            print(f"[Audio] System audio capture unavailable: {e}")
+            return
+
+        q = self._system_audio_queue
+        p = pyaudio.PyAudio()
+        stream = None
+        try:
+            wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+            device = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+            if not device["isLoopbackDevice"]:
+                for loopback in p.get_loopback_device_info_generator():
+                    if device["name"] in loopback["name"]:
+                        device = loopback
+                        break
+            native_rate = int(device["defaultSampleRate"])
+            native_channels = int(device["maxInputChannels"])
+            # Roughly one config.AUDIO_BLOCK_SIZE-sized chunk's worth of time, but at
+            # the loopback device's own native rate (WASAPI loopback must be opened
+            # at the device's real rate -- see _pull_system_audio for the conversion
+            # back down to config.AUDIO_SAMPLE_RATE).
+            native_blocksize = max(1, round(config.AUDIO_BLOCK_SIZE * native_rate / config.AUDIO_SAMPLE_RATE))
+
+            def callback(in_data, frame_count, time_info, status):
+                if self.running and self._audio_active and self._system_audio_queue is q:
+                    q.put((in_data, native_rate, native_channels))
+                    return (in_data, pyaudio.paContinue)
+                return (in_data, pyaudio.paComplete)
+
+            stream = p.open(format=pyaudio.paInt16, channels=native_channels, rate=native_rate,
+                             frames_per_buffer=native_blocksize, input=True,
+                             input_device_index=device["index"], stream_callback=callback)
+            stream.start_stream()
+            while self.running and self._audio_active and self._system_audio_queue is q and stream.is_active():
+                time.sleep(0.2)
+        except Exception as e:
+            print(f"[Audio] Could not open system audio loopback: {e}")
+        finally:
             try:
-                stream.stop()
-                stream.close()
+                if stream is not None:
+                    stream.stop_stream()
+                    stream.close()
             except Exception:
                 pass
+            try:
+                p.terminate()
+            except Exception:
+                pass
+
+    def _pull_system_audio(self, target_len):
+        """Returns exactly `target_len` int16 mono samples (at config.AUDIO_SAMPLE_RATE)
+        of the host's own system audio, downmixing/resampling queued WASAPI loopback
+        chunks (see _system_audio_loop) as needed -- or None if that capture never
+        started at all (self._system_audio_queue is None), telling _audio_loop there's
+        nothing to send yet at all (see its own fallback there)."""
+        import numpy as np
+        q = self._system_audio_queue
+        if q is None:
+            return None
+        buf = self._system_audio_leftover
+        while len(buf) < target_len:
+            try:
+                raw, native_rate, native_channels = q.get(timeout=0.1)
+            except queue.Empty:
+                # Nothing new arrived in time -- the host may simply be silent right
+                # now (WASAPI's shared-mode loopback goes quiet, not zero-filled,
+                # when nothing is actually playing). Pad with real silence instead
+                # of blocking indefinitely for audio that might not come this round.
+                buf = np.concatenate([buf, np.zeros(target_len - len(buf), dtype="int16")])
+                break
+            arr = np.frombuffer(raw, dtype="int16")
+            if native_channels > 1:
+                arr = arr.reshape(-1, native_channels).mean(axis=1).astype("int16")
+            if native_rate != config.AUDIO_SAMPLE_RATE:
+                src_n = len(arr)
+                dst_n = max(1, round(src_n * config.AUDIO_SAMPLE_RATE / native_rate))
+                arr = np.interp(np.linspace(0, src_n - 1, dst_n), np.arange(src_n),
+                                 arr.astype("float32")).astype("int16")
+            buf = np.concatenate([buf, arr])
+        self._system_audio_leftover = buf[target_len:]
+        return buf[:target_len]
 
     def _play_audio(self, pcm_bytes):
         try:
@@ -582,8 +689,9 @@ class HostAgent:
                     self._process_overlay(proto.decode_json(payload))
                 elif msg_type == proto.TYPE_AUDIO_FRAME:
                     # The viewer's own mic is only ever sent in Interview Mode (two-way);
-                    # in Normal Mode only the host's mic goes out (see _audio_loop below),
-                    # so this branch simply never fires for Normal Mode sessions.
+                    # in Normal Mode only the host's system audio goes out (see
+                    # _audio_loop below), so this branch simply never fires for Normal
+                    # Mode sessions.
                     if self._session_type == "interview":
                         self._play_audio(payload)
                         if self.recorder:
@@ -592,10 +700,10 @@ class HostAgent:
                     # self._session_type was already fixed at Start Hosting -- the
                     # relay's payload here just confirms it, it can't change it.
                     self._start_recording()
-                    # Host mic -> viewer now runs in both Normal and Interview Mode --
-                    # only the viewer's own mic (see viewer_agent.py's _mic_loop) stays
-                    # Interview-only, which is what makes Interview "two-way" and Normal
-                    # "just the host's voice and the screen".
+                    # Host system audio -> viewer now runs in both Normal and Interview
+                    # Mode -- only the viewer's own mic (see viewer_agent.py's
+                    # _mic_loop) stays Interview-only, which is what makes Interview
+                    # "two-way" and Normal "just the host's system audio and the screen".
                     self._audio_active = True
                     threading.Thread(target=self._audio_loop, daemon=True).start()
                     self.on_status("viewer_joined", {"session_type": self._session_type})

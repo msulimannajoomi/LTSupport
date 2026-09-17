@@ -33,7 +33,7 @@ class ViewerAgent:
         self.device_id = device_id
         self.on_frame = on_frame           # callback(pil_image)
         self.on_status = on_status         # callback(status, info)
-        self.on_audio = on_audio           # callback(pcm16_mono_bytes) -- host's mic, for recording
+        self.on_audio = on_audio           # callback(pcm16_mono_bytes) -- host's system audio, for recording
         self.on_own_audio = on_own_audio   # callback(pcm16_mono_bytes) -- this viewer's own mic, for recording
         self.local_target = local_target   # (ip, port) to connect directly over WiFi/LAN, or None for the relay
         # Not known until the host responds -- the host alone decides Normal vs Interview
@@ -220,10 +220,11 @@ class ViewerAgent:
                 return False
             return None
         elif msg_type == proto.TYPE_AUDIO_FRAME:
-            # The host's mic plays for the viewer in both Normal and Interview Mode
-            # now -- only sending the viewer's own mic back (_mic_loop below) stays
-            # Interview-only, which is what makes Interview "two-way" and Normal "just
-            # the host's voice and the screen". `muted` is the same flag _mic_loop
+            # The host's system audio plays for the viewer in both Normal and
+            # Interview Mode now -- only sending the viewer's own mic back
+            # (_mic_loop below) stays Interview-only, which is what makes Interview
+            # "two-way" and Normal "just the host's system audio and the screen".
+            # `muted` is the same flag _mic_loop
             # checks -- in Normal Mode there's no own-mic to mute, so here it doubles
             # as "don't play the host's audio". Recording still captures it regardless
             # of local mute state.
