@@ -409,16 +409,17 @@ class ViewerAgent:
             except Exception:
                 pass
         if self.sock:
-            if not self.local_target:
-                # Tells the relay this is a deliberate Disconnect, not a network drop
-                # -- otherwise it can't tell the two apart and would hold this
-                # viewer's slot open for its own GRACE_SECONDS on the host's side for
-                # nothing, leaving the host looking "still connected" for that whole
-                # window instead of promptly reset to idle.
-                try:
-                    self._send(proto.TYPE_VIEWER_CLOSING)
-                except Exception:
-                    pass
+            # Tells the other end this is a deliberate Disconnect, not a network drop.
+            # Over the relay, this tells IT to skip its own GRACE_SECONDS wait (see
+            # relay.py) and pass "deliberate" along to the host, which then stops
+            # this whole hosting run instead of idling, waiting for a reconnect that
+            # was never coming. Over a Local Network connection, there's no relay in
+            # between -- host_agent.py's _recv_loop sees this directly and does the
+            # same thing itself.
+            try:
+                self._send(proto.TYPE_VIEWER_CLOSING)
+            except Exception:
+                pass
             try:
                 self.sock.close()
             except Exception:

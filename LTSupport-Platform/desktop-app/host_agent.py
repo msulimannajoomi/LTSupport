@@ -372,18 +372,24 @@ class HostAgent:
         threading.Thread(target=self._audio_loop, args=(my_generation,), daemon=True).start()
         threading.Thread(target=self._capture_loop, args=(my_generation,), daemon=True).start()
         self.on_status("viewer_joined", {"session_type": self._session_type})
-        self._recv_loop()
+        clean = self._recv_loop()
         # This leg of the connection ended -- for any reason. Bank whatever time this
         # segment actually ran (see _end_local_segment) regardless of what happens
         # next -- a disconnected gap must never be billed or count against the plan
         # limit, whether or not the same viewer reconnects into it.
         self._end_local_segment()
-        # If local_server is still around waiting (an ordinary drop, not this host's
-        # own Stop Hosting), there's a real chance the same viewer reconnects and
-        # this method runs again on a fresh socket -- nothing else is torn down yet,
-        # same as the relay-mode equivalent (_run_relay's own retry loop).
-        if self.running and self.local_server and self.local_server.running:
+        # An ORDINARY drop (clean=False, e.g. a network blip), with local_server
+        # still around waiting and this host not already stopping some other way --
+        # there's a real chance the same viewer reconnects and this method runs
+        # again on a fresh socket, so nothing else is torn down yet, same as the
+        # relay-mode equivalent (_run_relay's own retry loop). A DELIBERATE
+        # disconnect (clean=True -- see _recv_loop's TYPE_VIEWER_CLOSING handling)
+        # stops this whole run right here instead, the same as this host's own Stop
+        # Hosting would.
+        if not clean and self.running and self.local_server and self.local_server.running:
             return
+        if self.local_server:
+            self.local_server.stop()
         self._finish_session()
 
     def _arm_local_limit_timer(self, limit_seconds):
@@ -809,12 +815,14 @@ class HostAgent:
             pass
 
     def _recv_loop(self):
-        """Runs until this leg of the connection ends. TYPE_SESSION_END and
-        TYPE_TRIAL_LIMIT don't end this at all -- see below, they just reset per-session
-        state and let the loop keep running, waiting for the next viewer. Returns True
-        only for a genuine protocol error, which should NOT be retried -- False for
-        anything that looks like an ordinary connection drop, which _run_relay retries
-        through."""
+        """Runs until this leg of the connection ends. TYPE_TRIAL_LIMIT and an
+        ordinary TYPE_SESSION_END don't end this at all -- see below, they just reset
+        per-session state and let the loop keep running, waiting for the next
+        viewer. Returns True for a genuine protocol error OR a deliberate
+        disconnect (TYPE_VIEWER_CLOSING over Local Network, or TYPE_SESSION_END
+        carrying "deliberate" over the relay) -- neither should be retried or
+        waited out, unlike an ordinary drop, which returns False for _run_relay/
+        _on_local_viewer_connected to retry through."""
         try:
             while self.running:
                 msg_type, payload = proto.recv_frame(self.sock)
@@ -846,16 +854,31 @@ class HostAgent:
                     self._audio_active = True
                     threading.Thread(target=self._audio_loop, daemon=True).start()
                     self.on_status("viewer_joined", {"session_type": self._session_type})
+                elif msg_type == proto.TYPE_VIEWER_CLOSING:
+                    # Local Network mode only -- a relay-hosted session never reaches
+                    # this branch (the relay itself consumes TYPE_VIEWER_CLOSING and
+                    # tells the host via TYPE_SESSION_END's own "deliberate" flag
+                    # instead, handled below). The viewer told us directly it's
+                    # disconnecting deliberately (Disconnect button), not a network
+                    # drop -- stop this whole hosting run instead of idling, waiting
+                    # for a reconnect that was never coming.
+                    self._audio_active = False
+                    self._stop_recording()
+                    return True
                 elif msg_type == proto.TYPE_SESSION_END:
-                    # That viewer's session is over -- not this hosting run. Reset back
-                    # to the same idle state as right after Start Hosting and keep
-                    # waiting on this same connection; the relay keeps this device
-                    # registered and ready for the next viewer regardless. Only this
-                    # host's own explicit Stop Hosting (self.running = False, checked by
-                    # the while loop above) ever ends things from here now.
+                    # That viewer's session is over -- not necessarily this hosting
+                    # run. An ORDINARY drop (or one that just ran out its grace
+                    # window) resets back to the same idle state as right after Start
+                    # Hosting and keeps waiting on this same connection, ready for the
+                    # next viewer. A DELIBERATE one (the relay's own "deliberate" flag
+                    # -- see relay.py's TYPE_VIEWER_CLOSING handling) stops this whole
+                    # run instead, same as the Local Network case above.
                     self._audio_active = False
                     self._stop_recording()
                     self.on_status("viewer_left", {})
+                    info = proto.decode_json(payload) if payload else {}
+                    if info.get("deliberate"):
+                        return True
                 elif msg_type == proto.TYPE_TRIAL_LIMIT:
                     # Same as TYPE_SESSION_END above -- this viewer's plan/balance ran
                     # out, not this hosting run. A later viewer is re-checked against the

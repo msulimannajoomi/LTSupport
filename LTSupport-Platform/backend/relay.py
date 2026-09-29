@@ -566,13 +566,17 @@ async def _handle_viewer(reader, writer, user, data):
         # viewer_agent.py's close()) -- nothing worth holding the slot open
         # GRACE_SECONDS for. End the session and tell the host right away instead of
         # leaving it looking "still connected" for a deliberate, clean close.
+        # "deliberate": True additionally tells the host itself (see host_agent.py's
+        # _recv_loop) to stop this whole hosting run instead of idling afterward,
+        # waiting for a reconnect that was never coming -- unlike an ordinary drop
+        # (below), which never carries this flag and keeps the host waiting.
         host_conn.viewer = None
         host_conn.viewer_connected_at = None
         await _bill_and_log_session(user["org_id"], device_id, session_type, account_type,
                                      session_started, time.time(), "viewer_disconnected", member_username,
                                      device_name=host_conn.name)
         try:
-            await _send(host_conn.writer, p.TYPE_SESSION_END, {"reason": "viewer_disconnected"})
+            await _send(host_conn.writer, p.TYPE_SESSION_END, {"reason": "viewer_disconnected", "deliberate": True})
         except Exception:
             pass
     elif host_conn.viewer is viewer:
