@@ -5,6 +5,7 @@ import io
 import queue
 import collections
 import ctypes
+import re
 import tkinter as tk
 
 import mss
@@ -303,7 +304,14 @@ class HostAgent:
 
     def _run_local(self):
         org_id = self.api.org_id if self.api else None
-        self.device_id = device_store.load_device_id(org_id) or f"LOCAL-{socket.gethostname()}"
+        # Derived from the name the user themselves typed in (see host_view.py), not
+        # the raw OS hostname -- so what's shown as the Device ID actually matches
+        # what they called this PC, instead of a name they never chose. Only used
+        # the very first time this device hosts under this account; a device_id
+        # already saved from a previous run is always reused as-is (see
+        # device_store.load_device_id) regardless of the name typed in later.
+        fallback_id = re.sub(r"[^A-Za-z0-9]+", "", self.device_name or "").upper() or socket.gethostname().upper()
+        self.device_id = device_store.load_device_id(org_id) or f"LOCAL-{fallback_id}"
         device_store.save_device_id(self.device_id, org_id)
         self.on_status("online", {"device_id": self.device_id, "device_name": self.device_name})
 

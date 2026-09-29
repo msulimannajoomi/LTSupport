@@ -39,7 +39,7 @@ class LoginView(ctk.CTkFrame):
         self.conn_label.pack(side="left")
         self.retry_btn = ctk.CTkButton(status_row, text="🔄 Retry", width=80, height=24, corner_radius=6,
                                         fg_color=theme.CARD_HOVER, hover_color=theme.BORDER, text_color=theme.TEXT,
-                                        font=theme.small(), command=self.check_connection)
+                                        font=theme.small(), command=self._on_retry_clicked)
         self.retry_btn.pack(side="right")
 
         # Purely additive tab -- "Organization Admin" is the default, pre-existing
@@ -65,13 +65,17 @@ class LoginView(ctk.CTkFrame):
         ctk.CTkLabel(inner, text="PASSWORD", font=theme.small(), text_color=theme.TEXT_MUTED).pack(anchor="w")
         password_row = ctk.CTkFrame(inner, fg_color="transparent")
         password_row.pack(pady=(4, 8))
-        self.password_entry = ctk.CTkEntry(password_row, width=280, height=42, corner_radius=8, show="•")
+        self.password_entry = ctk.CTkEntry(password_row, width=320, height=42, corner_radius=8, show="•")
         self.password_entry.pack(side="left")
         self.password_entry.bind("<Return>", lambda e: self.submit())
-        self.show_password_btn = ctk.CTkButton(password_row, text="👁", width=36, height=42, corner_radius=8,
-                                                fg_color=theme.CARD_HOVER, hover_color=theme.BORDER,
-                                                text_color=theme.TEXT, command=self.toggle_password_visibility)
-        self.show_password_btn.pack(side="left", padx=(6, 0))
+        # Placed ON the entry itself (in_=self.password_entry), not beside it as its
+        # own separate button -- sits inside the field's right edge, the way a
+        # password toggle normally looks.
+        self.show_password_btn = ctk.CTkButton(password_row, text="👁", width=28, height=28, corner_radius=6,
+                                                fg_color="transparent", hover_color=theme.BORDER,
+                                                text_color=theme.TEXT_MUTED, font=theme.small(),
+                                                command=self.toggle_password_visibility)
+        self.show_password_btn.place(in_=self.password_entry, relx=1.0, rely=0.5, anchor="e", x=-6)
 
         self.error_label = ctk.CTkLabel(inner, text="", text_color=theme.DANGER, font=theme.small())
         self.error_label.pack(anchor="w", pady=(0, 8))
@@ -115,6 +119,14 @@ class LoginView(ctk.CTkFrame):
         else:
             self.password_entry.configure(show="")
             self.show_password_btn.configure(text="🙈")
+
+    def _on_retry_clicked(self):
+        # A fresh start, not just a connectivity recheck -- whatever was half-typed
+        # (possibly while the server looked down) is cleared along with it.
+        self.org_id_entry.delete(0, "end")
+        self.password_entry.delete(0, "end")
+        self.error_label.configure(text="")
+        self.check_connection()
 
     def check_connection(self):
         self.conn_dot.configure(text_color=theme.TEXT_MUTED)

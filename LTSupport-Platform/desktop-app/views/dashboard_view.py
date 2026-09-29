@@ -32,6 +32,12 @@ class DashboardView(ctk.CTkFrame):
         is_admin = self.app.api.role in (None, "admin")
         is_observer = self.app.api.role != "normal"
 
+        # On the opposite side of the header from the account-action buttons below
+        # (Log Out, Billing, etc.) -- a primary navigation action, not one of those.
+        ctk.CTkButton(header, text="📃 Devices", width=100, height=36, corner_radius=8,
+                      fg_color=theme.CARD, hover_color=theme.CARD_HOVER, text_color=theme.TEXT,
+                      command=app.show_devices).pack(side="left", padx=(20, 0))
+
         ctk.CTkButton(header, text="Log Out", width=100, height=36, corner_radius=8,
                       fg_color=theme.CARD, hover_color=theme.CARD_HOVER, text_color=theme.TEXT,
                       command=app.logout).pack(side="right")
@@ -45,9 +51,6 @@ class DashboardView(ctk.CTkFrame):
             ctk.CTkButton(header, text="📋 Activity", width=100, height=36, corner_radius=8,
                           fg_color=theme.CARD, hover_color=theme.CARD_HOVER, text_color=theme.TEXT,
                           command=app.show_activity_logs).pack(side="right", padx=(0, 8))
-        ctk.CTkButton(header, text="📃 Devices", width=100, height=36, corner_radius=8,
-                      fg_color=theme.CARD, hover_color=theme.CARD_HOVER, text_color=theme.TEXT,
-                      command=app.show_devices).pack(side="right", padx=(0, 8))
         ctk.CTkButton(header, text="🪵 View Logs", width=100, height=36, corner_radius=8,
                       fg_color=theme.CARD, hover_color=theme.CARD_HOVER, text_color=theme.TEXT,
                       command=self._open_logs).pack(side="right", padx=(0, 8))
