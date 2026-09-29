@@ -85,10 +85,11 @@ class HostView(ctk.CTkFrame):
         self.toggle_btn.pack(fill="x")
 
         ctk.CTkLabel(inner, text="Once a viewer connects, this window disappears completely -- no "
-                                  "taskbar entry, no tray icon -- your microphone becomes live for the "
-                                  "call, and the whole session is recorded. If they disconnect, this "
-                                  "device stays online waiting for the next viewer, still hidden. "
-                                  "Ending the session is up to whoever's connected from there on.",
+                                  "taskbar entry, no tray icon -- this computer's system audio (whatever "
+                                  "is playing) becomes audible on the viewer's end, and the whole session "
+                                  "is recorded. If they disconnect, this device stays online waiting for "
+                                  "the next viewer, still hidden. Ending the session is up to whoever's "
+                                  "connected from there on.",
                      font=theme.small(), text_color=theme.TEXT_MUTED, wraplength=360,
                      justify="left").pack(anchor="w", pady=(16, 0))
 

@@ -12,18 +12,28 @@ import local_link
 import device_store
 
 HEARTBEAT_INTERVAL = 8  # seconds -- must stay well under the relay's IDLE_TIMEOUT (30s)
-# Delays between reconnect attempts after an unexpected drop, in the relay-hosted case
-# only (a LAN host only ever accepts one viewer -- see local_link.py -- so there's no
-# point retrying there). The first few land inside the relay's own GRACE_SECONDS=15
-# window (relay.py) and silently resume the exact same session; attempts after that
-# land as a brand new connection instead (the elapsed session clock isn't preserved,
-# but the pairing itself still succeeds) as long as the host is still around waiting --
-# which it now always is unless its own user explicitly stops hosting (see
-# host_agent.py/host_view.py), so this keeps retrying at RECONNECT_RETRY_INTERVAL
-# forever rather than ever giving up on its own. Only closing the window (see
-# viewer_view.py's Terminate Connection) or the host truly stopping ends things now.
+# Delays between reconnect attempts after an unexpected drop, over the internet relay.
+# The first few land inside the relay's own GRACE_SECONDS=15 window (relay.py) and
+# silently resume the exact same session; attempts after that land as a brand new
+# connection instead (the elapsed session clock isn't preserved, but the pairing
+# itself still succeeds) as long as the host is still around waiting -- which it now
+# always is unless its own user explicitly stops hosting (see host_agent.py/
+# host_view.py), so this keeps retrying at RECONNECT_RETRY_INTERVAL forever rather
+# than ever giving up on its own. Only closing the window (see viewer_view.py's
+# Terminate Connection) or the host truly stopping ends things now.
 RECONNECT_DELAYS = [0, 1, 2, 4, 8, 15]
 RECONNECT_RETRY_INTERVAL = 20
+# Same idea, for a direct Local Network (WiFi/LAN) session -- e.g. the WiFi adapter
+# being toggled off and back on, or the router handing out a new DHCP lease after a
+# longer drop. local_link.py's own host side (LocalHostServer) now keeps accepting
+# connections rather than shutting down after the first pairing, and treats a fresh
+# one as resuming the same run -- so retrying here actually has something to resume.
+LOCAL_RECONNECT_DELAYS = [1, 2, 4, 8, 8]
+LOCAL_RECONNECT_RETRY_INTERVAL = 20
+# How long a single fallback discovery broadcast gets, when the last known (ip, port)
+# stops working -- shorter than local_link.discover_local_hosts's own default since
+# this runs once per retry attempt, not as a one-off "find a host" action.
+LOCAL_REDISCOVER_TIMEOUT = 3.0
 
 
 class ViewerAgent:
@@ -141,7 +151,7 @@ class ViewerAgent:
 
     def _reconnect(self):
         if self.local_target:
-            return False  # the LAN host only ever accepts one viewer -- see local_link.py
+            return self._reconnect_local()
         attempt = 0
         while self.running and not self._explicit_close:
             attempt += 1
@@ -154,6 +164,40 @@ class ViewerAgent:
             if self._do_connect(silent=True):
                 self.on_status("resumed", {})
                 return True
+        return False
+
+    def _reconnect_local(self):
+        """Local Network (WiFi/LAN direct) equivalent of _reconnect -- e.g. the WiFi
+        adapter got toggled off and back on, or dropped and reassociated, while
+        connected directly to the host. Tries the last known (ip, port) first (the
+        fast path -- most WiFi drops reconnect to the same AP/lease and the host's
+        address hasn't changed), and falls back to a fresh discovery broadcast to
+        relocate the same device_id if that stops working (e.g. a new DHCP lease
+        after a longer outage). Retries forever, same as the relay case, since
+        local_link.py's own host side now waits for exactly this instead of shutting
+        down after the first pairing."""
+        attempt = 0
+        while self.running and not self._explicit_close:
+            attempt += 1
+            delay = (LOCAL_RECONNECT_DELAYS[attempt - 1] if attempt <= len(LOCAL_RECONNECT_DELAYS)
+                      else LOCAL_RECONNECT_RETRY_INTERVAL)
+            time.sleep(delay)
+            if not self.running or self._explicit_close:
+                return False
+            self.on_status("reconnecting", {"attempt": attempt})
+            if self._do_connect(silent=True):
+                self.on_status("resumed", {})
+                return True
+            if not self.running or self._explicit_close:
+                return False
+            try:
+                for found_id, ip, port, _session_type in local_link.discover_local_hosts(
+                        timeout=LOCAL_REDISCOVER_TIMEOUT):
+                    if found_id == self.device_id:
+                        self.local_target = (ip, port)
+                        break
+            except Exception:
+                pass
         return False
 
     def _recv_loop(self):
@@ -341,6 +385,16 @@ class ViewerAgent:
             except Exception:
                 pass
         if self.sock:
+            if not self.local_target:
+                # Tells the relay this is a deliberate Disconnect, not a network drop
+                # -- otherwise it can't tell the two apart and would hold this
+                # viewer's slot open for its own GRACE_SECONDS on the host's side for
+                # nothing, leaving the host looking "still connected" for that whole
+                # window instead of promptly reset to idle.
+                try:
+                    self._send(proto.TYPE_VIEWER_CLOSING)
+                except Exception:
+                    pass
             try:
                 self.sock.close()
             except Exception:

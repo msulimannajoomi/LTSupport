@@ -20,14 +20,27 @@ HELLO_TIMEOUT = 15
 # a comfortable margin for normal network jitter without masking a genuinely dead peer.
 IDLE_TIMEOUT = 45
 # How long a device's viewer slot stays reserved after the viewer's connection drops,
-# before the session is actually torn down. The relay can't tell a genuine "viewer
-# closed the app" apart from "network blipped" -- both just look like the read failing
-# -- so every drop gets this same grace window. Within it, the same viewer reconnecting
-# resumes the session transparently (host is never told the viewer left); outside it,
-# the session ends and the host is notified as before. Kept well under the desktop
-# client's own reconnect attempts (viewer_agent.py) so a real retry lands before this
-# expires.
+# before the session is actually torn down. An explicit TYPE_VIEWER_CLOSING (see
+# viewer_agent.py's close()) skips this window entirely -- it's only for a drop the
+# relay can't otherwise tell apart from a network blip. Within it, the same viewer
+# reconnecting resumes the session transparently (host is never told the viewer left);
+# outside it, the session ends and the host is notified as before. Kept well under the
+# desktop client's own reconnect attempts (viewer_agent.py) so a real retry lands
+# before this expires.
 GRACE_SECONDS = 15
+# Same idea, the other direction: how long a device stays registered (and any attached
+# viewer/observer held open, frozen but not disconnected) after the HOST's own
+# connection drops, before the session is actually torn down. Covers a plain network
+# blip, the app crashing, or the computer sleeping/restarting -- host_agent.py's own
+# reconnect (RELAY_RECONNECT_DELAYS, then every 20s indefinitely) keeps retrying the
+# whole time and, on success, transparently resumes this exact registration (same
+# device_id, same attached viewer/observers) with nothing sent to the viewer at all.
+# An explicit TYPE_HOST_STOPPING (deliberate Stop Hosting) skips this window entirely
+# -- this one only ever applies to an unintentional drop. A full hour, not just enough
+# to cover the first few quick retries, so a real outage (the host's internet actually
+# being down, not just a blip) still has a real chance to resolve itself and resume
+# the exact same session instead of the viewer having to reconnect from scratch.
+HOST_GRACE_SECONDS = 60 * 60
 
 # device_id -> HostConn, the single source of truth for "who is live right now"
 HOSTS = {}
@@ -43,6 +56,11 @@ class HostConn:
         self.session_type = session_type  # chosen by the HOST at Start Hosting -- the viewer has no say
         self.viewer = None  # ViewerConn or None -- the single "normal"-role support session, unchanged
         self.grace = None  # dict describing a just-dropped viewer's still-resumable session, or None
+        # Set while THIS host's own connection is down and _expire_host_grace is
+        # counting down toward really tearing the session down -- see HOST_GRACE_SECONDS.
+        # Cancelled the moment a reconnect for this same device_id takes this same
+        # HostConn back over (see _handle_host's registration section).
+        self.host_grace_task = None
         # RBAC: any number of non-"normal"-role (currently just "admin") observers can
         # watch this host's live screen at once, entirely independent of self.viewer --
         # see _handle_observer. Never gated by billing/session limits, never occupies
@@ -132,25 +150,49 @@ async def _handle_host(reader, writer, user, data):
         writer.close()
         return
 
-    stale = HOSTS.get(device_id)
-    if stale is not None:
-        try:
-            stale.writer.close()
-        except Exception:
-            pass
+    # A previous registration for this same device_id (same owner -- enforced by the
+    # DEVICE_ID_TAKEN check above) still sitting in HOSTS is reused rather than
+    # replaced: either it's a genuine zombie (a duplicate registration racing in while
+    # the old socket hasn't yet noticed it's dead -- preempted the same way as always,
+    # by closing its writer) or it's the SAME host reconnecting after a drop, still
+    # inside its own HOST_GRACE_SECONDS window (see _expire_host_grace below). Either
+    # way, reusing the object instead of creating a fresh one is what lets an attached
+    # viewer/observer keep going without ever being told anything happened -- they hold
+    # a reference to this exact HostConn, and _viewer_forward_loop/the fan-out below
+    # just start working again the instant conn.writer points at a live socket.
+    conn = HOSTS.get(device_id)
+    if conn is not None:
+        if conn.host_grace_task is not None:
+            conn.host_grace_task.cancel()
+            conn.host_grace_task = None
+        else:
+            # Not in a grace window -- a genuinely stale/duplicate connection, closed
+            # the same way this always preempted a previous registration.
+            try:
+                conn.writer.close()
+            except Exception:
+                pass
+        conn.writer = writer
+        conn.name = device_name
+        conn.machine_id = data.get("machine_id")
+        conn.session_type = session_type
+    else:
+        conn = HostConn(writer, device_id, user["id"], device_name, machine_id=data.get("machine_id"),
+                         session_type=session_type)
+        HOSTS[device_id] = conn
 
     await asyncio.to_thread(db.upsert_device, device_id, user["id"], device_name, "online", session_type)
-    conn = HostConn(writer, device_id, user["id"], device_name, machine_id=data.get("machine_id"),
-                     session_type=session_type)
-    HOSTS[device_id] = conn
-
     await _send(writer, p.TYPE_HELLO_OK, {"device_id": device_id, "device_name": device_name})
 
+    deliberate_stop = False
     try:
         while True:
             msg_type, payload = await asyncio.wait_for(_read_frame(reader), timeout=IDLE_TIMEOUT)
             if msg_type == p.TYPE_HEARTBEAT:
                 continue
+            if msg_type == p.TYPE_HOST_STOPPING:
+                deliberate_stop = True
+                break
             if conn.viewer is not None:
                 await _send(conn.viewer.writer, msg_type, payload)
             # Fan out to every observer independent of conn.viewer -- an admin can be
@@ -173,33 +215,72 @@ async def _handle_host(reader, writer, user, data):
     except (asyncio.IncompleteReadError, ConnectionResetError, ConnectionAbortedError, OSError) as e:
         print(f"[Relay] device={device_id}: host connection ended: {type(e).__name__}: {e}")
     finally:
-        if HOSTS.get(device_id) is conn:
-            del HOSTS[device_id]
-        await asyncio.to_thread(db.set_device_status, device_id, "offline")
-        if conn.grace is not None:
-            conn.grace["expire_task"].cancel()
-        if conn.viewer is not None:
+        if conn.writer is not writer:
+            # A newer connection for this same device_id already took over (see the
+            # registration section above) while this one was still winding down --
+            # that connection now owns conn entirely; this dead leg has nothing left
+            # to clean up.
             try:
-                await _send(conn.viewer.writer, p.TYPE_SESSION_END, {"reason": "host_disconnected"})
+                writer.close()
             except Exception:
                 pass
-            try:
-                conn.viewer.writer.close()
-            except Exception:
-                pass
-        for obs in list(conn.observers):
-            try:
-                await _send(obs.writer, p.TYPE_SESSION_END, {"reason": "host_disconnected"})
-            except Exception:
-                pass
-            try:
-                obs.writer.close()
-            except Exception:
-                pass
+        else:
+            await asyncio.to_thread(db.set_device_status, device_id, "offline")
+            if deliberate_stop:
+                await _teardown_host(conn, device_id, "host_stopped")
+            else:
+                # An ordinary drop -- network blip, the app crashing, the computer
+                # sleeping or restarting -- with host_agent.py's own reconnect
+                # (RELAY_RECONNECT_DELAYS) already retrying on its end. Give it
+                # HOST_GRACE_SECONDS to land before actually ending the session.
+                conn.host_grace_task = asyncio.create_task(_expire_host_grace(conn, device_id, writer))
+
+
+async def _expire_host_grace(conn, device_id, writer):
+    """Runs for HOST_GRACE_SECONDS after the host's connection drops (an ordinary one,
+    not a deliberate Stop Hosting -- see _handle_host). If a reconnect for this same
+    device_id takes `conn` back over first, that registration cancels this task and
+    the session just resumes with nothing torn down. Otherwise the host really is gone
+    for now: tear everything down the same way an immediate disconnect always did."""
+    try:
+        await asyncio.sleep(HOST_GRACE_SECONDS)
+    except asyncio.CancelledError:
+        return
+    if HOSTS.get(device_id) is not conn or conn.writer is not writer:
+        return  # superseded already
+    await _teardown_host(conn, device_id, "host_disconnected")
+
+
+async def _teardown_host(conn, device_id, reason):
+    """Really ends this device's hosting run: drops it from HOSTS and tells any
+    attached viewer/observer the session is over. Shared by both the deliberate-stop
+    (immediate) and grace-expired (delayed) paths -- see _handle_host."""
+    if HOSTS.get(device_id) is conn:
+        del HOSTS[device_id]
+    if conn.grace is not None:
+        conn.grace["expire_task"].cancel()
+    if conn.viewer is not None:
         try:
-            writer.close()
+            await _send(conn.viewer.writer, p.TYPE_SESSION_END, {"reason": reason})
         except Exception:
             pass
+        try:
+            conn.viewer.writer.close()
+        except Exception:
+            pass
+    for obs in list(conn.observers):
+        try:
+            await _send(obs.writer, p.TYPE_SESSION_END, {"reason": reason})
+        except Exception:
+            pass
+        try:
+            obs.writer.close()
+        except Exception:
+            pass
+    try:
+        conn.writer.close()
+    except Exception:
+        pass
 
 
 async def _viewer_forward_loop(reader, host_conn):
@@ -209,18 +290,34 @@ async def _viewer_forward_loop(reader, host_conn):
     instead of just looking like an ordinary disconnect. Only ever used for the
     single "normal"-role viewer slot (host_conn.viewer) -- any other role is routed to
     _handle_observer instead (see _handle_viewer), which never forwards anything
-    upstream at all, so there's no role-based filtering needed here any more."""
+    upstream at all, so there's no role-based filtering needed here any more.
+
+    Returns True if the viewer told us it's closing deliberately (see
+    TYPE_VIEWER_CLOSING in viewer_agent.py's close()) -- the caller skips its own
+    GRACE_SECONDS wait for that case, since there's nothing worth waiting to resume.
+    False for anything that looks like an ordinary drop."""
     try:
         while True:
             msg_type, payload = await asyncio.wait_for(_read_frame(reader), timeout=IDLE_TIMEOUT)
             if msg_type == p.TYPE_HEARTBEAT:
                 continue
-            await _send(host_conn.writer, msg_type, payload)
+            if msg_type == p.TYPE_VIEWER_CLOSING:
+                return True
+            try:
+                await _send(host_conn.writer, msg_type, payload)
+            except Exception:
+                # The host may be mid-reconnect right now (see HOST_GRACE_SECONDS in
+                # _handle_host) -- drop this one message (an input event, overlay
+                # command, or frame ack the host wouldn't have been able to use
+                # anyway) instead of ending the viewer's own connection over what's
+                # very likely just a brief, host-side blip.
+                pass
     except asyncio.TimeoutError:
         print(f"[Relay] device={host_conn.device_id}: viewer connection idle-timed-out after {IDLE_TIMEOUT}s "
               f"with no frame (including heartbeats)")
     except (asyncio.IncompleteReadError, ConnectionResetError, ConnectionAbortedError, OSError) as e:
         print(f"[Relay] device={host_conn.device_id}: viewer connection ended: {type(e).__name__}: {e}")
+    return False
 
 
 async def _handle_observer(reader, writer, user, host_conn):
@@ -265,6 +362,25 @@ async def _handle_observer(reader, writer, user, host_conn):
             pass
 
 
+async def _bill_and_log_session(org_id, device_id, session_type, account_type, session_started, ended_at,
+                                 end_reason, member_username):
+    """Shared by every path that ends a viewer's billable session (grace expiring, a
+    deliberate viewer close, or the plan/balance limit being hit) -- applies the same
+    usage bookkeeping and activity-log entry regardless of which one it was."""
+    elapsed_minutes = (ended_at - session_started) / 60
+    billed_minutes, amount_charged = 0.0, 0.0
+    if session_type == "interview":
+        await asyncio.to_thread(db.record_interview_usage, org_id, elapsed_minutes)
+    else:
+        billed_minutes, amount_charged = await asyncio.to_thread(
+            db.record_session_usage, org_id, elapsed_minutes,
+            config.PREPAID_FREE_MINUTES_PER_SESSION, config.PREPAID_RATE_PER_HOUR_CENTS)
+    await asyncio.to_thread(
+        db.log_session, org_id, device_id, session_type, account_type,
+        _iso(session_started), _iso(ended_at), elapsed_minutes, billed_minutes, amount_charged,
+        end_reason, member_username=member_username)
+
+
 async def _expire_grace(host_conn, org_id, session_type, session_started, account_type, member_username):
     """Runs for GRACE_SECONDS after a viewer's connection drops. If nothing cancels it
     first (a reconnect claiming the slot -- see _handle_viewer), the session is really
@@ -284,19 +400,8 @@ async def _expire_grace(host_conn, org_id, session_type, session_started, accoun
     # happened to anything watching it, correctly.
     if host_conn.viewer_connected_at == session_started:
         host_conn.viewer_connected_at = None
-    ended_at = time.time()
-    elapsed_minutes = (ended_at - session_started) / 60
-    billed_minutes, amount_charged = 0.0, 0.0
-    if session_type == "interview":
-        await asyncio.to_thread(db.record_interview_usage, org_id, elapsed_minutes)
-    else:
-        billed_minutes, amount_charged = await asyncio.to_thread(
-            db.record_session_usage, org_id, elapsed_minutes,
-            config.PREPAID_FREE_MINUTES_PER_SESSION, config.PREPAID_RATE_PER_HOUR_CENTS)
-    await asyncio.to_thread(
-        db.log_session, org_id, host_conn.device_id, session_type, account_type,
-        _iso(session_started), _iso(ended_at), elapsed_minutes, billed_minutes, amount_charged,
-        "viewer_disconnected", member_username=member_username)
+    await _bill_and_log_session(org_id, host_conn.device_id, session_type, account_type,
+                                 session_started, time.time(), "viewer_disconnected", member_username)
     try:
         await _send(host_conn.writer, p.TYPE_SESSION_END, {"reason": "viewer_disconnected"})
     except Exception:
@@ -423,24 +528,25 @@ async def _handle_viewer(reader, writer, user, data):
                 t.cancel()
 
     plan_limit_hit = len(tasks) > 1 and forward_task not in done
+    # Only meaningful when forward_task is the one that actually completed (not
+    # cancelled out from under a plan-limit hit) -- see _viewer_forward_loop's return
+    # contract. Guarded defensively: forward_task's own try/except already covers
+    # every expected way it ends, but an unexpected exception here shouldn't be able
+    # to crash this connection's handling on top of whatever already went wrong.
+    deliberate_close = False
+    if forward_task in done:
+        try:
+            deliberate_close = forward_task.result() is True
+        except Exception:
+            deliberate_close = False
 
     if plan_limit_hit:
         if host_conn.viewer is viewer:
             host_conn.viewer = None
             host_conn.viewer_connected_at = None
         ended_at = time.time()
-        elapsed_minutes = (ended_at - session_started) / 60
-        billed_minutes, amount_charged = 0.0, 0.0
-        if session_type == "interview":
-            await asyncio.to_thread(db.record_interview_usage, user["org_id"], elapsed_minutes)
-        else:
-            billed_minutes, amount_charged = await asyncio.to_thread(
-                db.record_session_usage, user["org_id"], elapsed_minutes,
-                config.PREPAID_FREE_MINUTES_PER_SESSION, config.PREPAID_RATE_PER_HOUR_CENTS)
-        await asyncio.to_thread(
-            db.log_session, user["org_id"], device_id, session_type, account_type,
-            _iso(session_started), _iso(ended_at), elapsed_minutes, billed_minutes, amount_charged,
-            "plan_limit_reached", member_username=member_username)
+        await _bill_and_log_session(user["org_id"], device_id, session_type, account_type,
+                                     session_started, ended_at, "plan_limit_reached", member_username)
         message = {
             "code": "PLAN_LIMIT_REACHED",
             "message": plan.limit_reached_message(user, config.TRIAL_SESSION_LIMIT_SECONDS, config.UPGRADE_CONTACT_NUMBER),
@@ -453,10 +559,23 @@ async def _handle_viewer(reader, writer, user, data):
             await _send(host_conn.writer, p.TYPE_TRIAL_LIMIT, message)
         except Exception:
             pass
+    elif deliberate_close and host_conn.viewer is viewer:
+        # The viewer told us directly it's disconnecting (see TYPE_VIEWER_CLOSING in
+        # viewer_agent.py's close()) -- nothing worth holding the slot open
+        # GRACE_SECONDS for. End the session and tell the host right away instead of
+        # leaving it looking "still connected" for a deliberate, clean close.
+        host_conn.viewer = None
+        host_conn.viewer_connected_at = None
+        await _bill_and_log_session(user["org_id"], device_id, session_type, account_type,
+                                     session_started, time.time(), "viewer_disconnected", member_username)
+        try:
+            await _send(host_conn.writer, p.TYPE_SESSION_END, {"reason": "viewer_disconnected"})
+        except Exception:
+            pass
     elif host_conn.viewer is viewer:
-        # The forward loop ended on its own (the relay can't tell a clean close apart
-        # from a network blip from here). Hold the slot open for GRACE_SECONDS rather
-        # than tearing the session down immediately -- see _expire_grace.
+        # The forward loop ended some other way (the relay can't tell a genuine crash
+        # apart from a network blip from here). Hold the slot open for GRACE_SECONDS
+        # rather than tearing the session down immediately -- see _expire_grace.
         host_conn.viewer = None
         host_conn.grace = {
             "owner_id": user["id"],

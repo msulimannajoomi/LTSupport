@@ -366,14 +366,32 @@ class ViewerView:
             self.status_label.configure(text=f"Connected — {self.device_id}{via}{mode}", text_color=theme.SUCCESS)
             self.terminate_btn.pack_forget()
         elif status == "ended":
-            # A genuine, intentional end -- the host user themselves stopped hosting
-            # (see host_view.py: it no longer stops hosting just because a viewer's
-            # connection blipped, only on its own explicit Stop Hosting any more) --
-            # not a network issue, so still closes normally.
-            self.status_label.configure(text="Session ended by host.", text_color=theme.WARNING)
-            if not self._closed:
-                dialogs.show_notice(self.top, "Connection Ended", "The host ended the session.", kind="warning")
-            self.close()
+            reason = info.get("reason")
+            if reason == "host_disconnected":
+                # The HOST side dropped (network blip, app crash, computer asleep/
+                # restarting) and didn't reconnect within the relay's own grace
+                # window (see HOST_GRACE_SECONDS in relay.py) -- a longer outage, not
+                # a brief one, since a quick reconnect would have resumed this exact
+                # session with nothing shown here at all. The device may well be back
+                # online again by now, so offer to try again instead of just closing.
+                device_id, local_target = self.device_id, self.local_target
+                self.status_label.configure(text="Lost the host — it didn't reconnect in time.",
+                                             text_color=theme.WARNING)
+                self.close()
+                dialogs.show_notice(
+                    self.app, "Connection Lost",
+                    "The host computer didn't reconnect in time. It may still be offline, "
+                    "or you can try connecting again now.",
+                    kind="warning", primary_text="Reconnect",
+                    on_primary=lambda: self.app.open_viewer(device_id, local_target=local_target))
+            else:
+                # A genuine, intentional end -- the host user themselves clicked Stop
+                # Hosting (see host_agent.py's TYPE_HOST_STOPPING) -- not a network
+                # issue, so still closes normally with no reconnect prompt.
+                self.status_label.configure(text="Session ended by host.", text_color=theme.WARNING)
+                if not self._closed:
+                    dialogs.show_notice(self.top, "Connection Ended", "The host ended the session.", kind="warning")
+                self.close()
         elif status == "trial_limit":
             self.status_label.configure(text="Trial time limit reached.", text_color=theme.WARNING)
             dialogs.show_notice(

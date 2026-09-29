@@ -130,6 +130,16 @@ class HostAgent:
         self._limit_timer = None
         self._session_started_at = None
         self._usage_reported = False
+        # Bumped each time a NEW socket takes over mid-run (Local Network mode only --
+        # see _on_local_viewer_connected/local_link.py's own reconnect-by-superseding).
+        # _capture_loop/_audio_loop each capture the generation they were started
+        # with and quietly stop themselves once a newer one exists, instead of
+        # piling up as duplicate threads all racing to use self.sock after a
+        # WiFi drop-and-reconnect. None (the default) means "don't check this at
+        # all" -- relay mode's own reconnect (a brand new HostAgent-level retry
+        # loop, not a same-run socket swap) never passes a generation and is
+        # completely unaffected by this.
+        self._capture_generation = 0
         # Chosen by the user on the Host screen at Start Hosting -- fixed for the whole
         # time this device is hosting; a connecting viewer never gets to request or
         # override it.
@@ -200,6 +210,17 @@ class HostAgent:
                 pass
         self._stop_recording()
         if self.sock:
+            if not self.local_mode:
+                # Tells the relay this is a deliberate Stop Hosting, not a network
+                # drop -- otherwise it can't tell the two apart and would sit waiting
+                # out its own reconnect-grace window (see HOST_GRACE_SECONDS in
+                # relay.py) for a host that's never coming back, leaving any attached
+                # viewer/observer frozen for no reason instead of promptly told the
+                # session is over.
+                try:
+                    self._send(proto.TYPE_HOST_STOPPING)
+                except Exception:
+                    pass
             try:
                 self.sock.close()
             except Exception:
@@ -280,21 +301,49 @@ class HostAgent:
     def _on_local_viewer_connected(self, sock, limit_seconds, session_type):
         # session_type here always matches self._session_type -- it's this host's own
         # configured value, echoed back by local_link after the handshake.
+        #
+        # Dispatched on its own thread by LocalHostServer, and may fire more than once
+        # across one Start-Hosting-to-Stop-Hosting run: local_link.py's own connection
+        # now keeps accepting after a drop, and a fresh one (necessarily the same org
+        # account -- verify_peer already guarantees that) always supersedes whatever
+        # was live, exactly so a WiFi drop-and-reconnect resumes this same run instead
+        # of requiring Stop/Start Hosting again. `first_connection` distinguishes that
+        # genuinely first call from a later resume: only the first one stamps
+        # _session_started_at, starts the recorder, and arms the plan/trial limit
+        # timer -- a resume must never reset any of those, or a network blip would
+        # look like free extra session time, or restart the recording as a second
+        # file.
+        first_connection = self.sock is None
         self.sock = sock
-        self._session_started_at = time.time()
-        self._usage_reported = False
-        self._start_recording()
+        self._capture_generation += 1
+        my_generation = self._capture_generation
+        if first_connection:
+            self._session_started_at = time.time()
+            self._usage_reported = False
+            self._start_recording()
+            if limit_seconds is not None:
+                self._limit_timer = threading.Timer(limit_seconds, self._local_limit_reached)
+                self._limit_timer.daemon = True
+                self._limit_timer.start()
         # Host system audio -> viewer runs in both Normal and Interview Mode -- see the
-        # matching comment in _recv_loop's TYPE_VIEWER_JOINED branch (the relay-mode path).
+        # matching comment in _recv_loop's TYPE_VIEWER_JOINED branch (the relay-mode
+        # path). Restarted on every (re)connection, not just the first -- unlike the
+        # capture loop, a failed send ends _audio_loop outright rather than just
+        # looping again (see its own comment) -- but each carries this same
+        # generation, so an old one still winding down never fights a newer one over
+        # self._system_audio_queue.
         self._audio_active = True
-        threading.Thread(target=self._audio_loop, daemon=True).start()
-        threading.Thread(target=self._capture_loop, daemon=True).start()
-        if limit_seconds is not None:
-            self._limit_timer = threading.Timer(limit_seconds, self._local_limit_reached)
-            self._limit_timer.daemon = True
-            self._limit_timer.start()
+        threading.Thread(target=self._audio_loop, args=(my_generation,), daemon=True).start()
+        threading.Thread(target=self._capture_loop, args=(my_generation,), daemon=True).start()
         self.on_status("viewer_joined", {"session_type": self._session_type})
         self._recv_loop()
+        # This leg of the connection ended -- for any reason. If local_server is still
+        # around waiting (an ordinary drop, not this host's own Stop Hosting), there's
+        # a real chance the same viewer reconnects and this method runs again on a
+        # fresh socket -- nothing here is torn down yet, same as the relay-mode
+        # equivalent (_run_relay's own retry loop).
+        if self.running and self.local_server and self.local_server.running:
+            return
         self._finish_session()
 
     def _local_limit_reached(self):
@@ -423,7 +472,7 @@ class HostAgent:
 
         self._finish_session()
 
-    def _capture_loop(self):
+    def _capture_loop(self, generation=None):
         with mss.mss() as sct:
             monitor = sct.monitors[0]
             # The real, authoritative pixel dimensions of what's actually being
@@ -446,7 +495,7 @@ class HostAgent:
             # tolerate before assuming the missing acks are never coming and
             # self-healing -- see the comment below.
             consecutive_timeouts = 0
-            while self.running:
+            while self.running and (generation is None or generation == self._capture_generation):
                 try:
                     # Wait for a free slot in the in-flight window (see FRAME_WINDOW)
                     # rather than a strict one-at-a-time ack.
@@ -519,12 +568,19 @@ class HostAgent:
                 self._send_width = min(self._max_send_width, self._send_width + 64)
         self._frame_ack_semaphore.release()
 
-    def _audio_loop(self):
+    def _audio_loop(self, generation=None):
         """Sends the host's own system/speaker output (a YouTube video, music, any
         other app's audio) to the viewer -- NOT the host's mic. Explicitly not
         mixed with the mic (a mixed version existed briefly and was deliberately
         reverted): this channel is system audio only now. The host's own mic isn't
-        captured/sent anywhere in this codebase at all any more."""
+        captured/sent anywhere in this codebase at all any more.
+
+        Restarted on every (re)connection in Local Network mode (see
+        _on_local_viewer_connected) -- unlike _capture_loop, a failed send here ends
+        this function outright rather than just looping again, so there's no way for
+        one long-lived call to just keep working across a socket swap. `generation`
+        (see _capture_generation) keeps a still-winding-down old call from clobbering
+        a newer one's self._system_audio_queue in its own finally below."""
         try:
             import numpy as np
         except Exception as e:
@@ -534,12 +590,13 @@ class HostAgent:
         # Fresh queue/leftover-buffer for this run -- _system_audio_loop (its own
         # thread, started below) pushes captured chunks in; _pull_system_audio drains
         # and converts them below.
-        self._system_audio_queue = queue.Queue()
+        my_queue = queue.Queue()
+        self._system_audio_queue = my_queue
         self._system_audio_leftover = np.array([], dtype="int16")
         threading.Thread(target=self._system_audio_loop, daemon=True).start()
 
         try:
-            while self.running and self._audio_active:
+            while self.running and self._audio_active and (generation is None or generation == self._capture_generation):
                 chunk = self._pull_system_audio(config.AUDIO_BLOCK_SIZE)
                 if chunk is None:
                     # System audio capture hasn't started yet (or failed outright) --
@@ -554,7 +611,8 @@ class HostAgent:
         except Exception:
             pass
         finally:
-            self._system_audio_queue = None
+            if self._system_audio_queue is my_queue:
+                self._system_audio_queue = None
 
     def _system_audio_loop(self):
         """Captures whatever's playing through the host's own speakers (a YouTube

@@ -2,10 +2,14 @@
 internet relay entirely for screen/audio/input traffic. Two pieces:
 
 - LocalHostServer (host side): answers UDP discovery broadcasts from viewers on the same
-  LAN, then accepts one direct TCP connection, verifies it belongs to the same account,
+  LAN, then accepts a direct TCP connection, verifies it belongs to the same account,
   and hands the raw socket back to the caller -- which from that point on runs the exact
   same length-prefixed frame protocol (protocol.py) used with the relay. Nothing about
   screen/audio/input handling needs to know or care which transport it's running over.
+  Keeps accepting afterward too (a fresh connection always supersedes the live one) so
+  a WiFi drop-and-reconnect can resume the same hosting run instead of requiring
+  Stop/Start Hosting again -- see HostAgent's own generation-guarded capture/audio
+  loops in host_agent.py, which is what makes resuming onto a new socket safe.
 - discover_local_hosts / connect_local (viewer side): the other end of that handshake.
 
 Billing is NOT skipped just because the relay is bypassed: the caller (HostAgent) still
@@ -55,6 +59,14 @@ class LocalHostServer:
         self.running = False
         self._tcp_sock = None
         self._udp_sock = None
+        # The current live viewer connection, if any -- a fresh incoming connection
+        # (which only the same org account could ever complete the handshake for --
+        # verify_peer already guarantees that) always supersedes it, the same
+        # tradeoff the relay itself already makes for its own stale-connection
+        # preemption (see relay.py's _handle_host). This is what lets a WiFi
+        # drop-and-reconnect resume this same hosting run instead of forcing
+        # Stop/Start Hosting again -- see _tcp_loop.
+        self._current_conn = None
 
     def start(self):
         self.running = True
@@ -63,7 +75,7 @@ class LocalHostServer:
 
     def stop(self):
         self.running = False
-        for s in (self._tcp_sock, self._udp_sock):
+        for s in (self._tcp_sock, self._udp_sock, self._current_conn):
             try:
                 if s:
                     s.close()
@@ -159,14 +171,23 @@ class LocalHostServer:
                     pass
                 continue
 
-            # One viewer at a time -- stop accepting/advertising once paired.
-            self.running = False
-            try:
-                self._udp_sock.close()
-            except Exception:
-                pass
-            self.on_viewer_connected(conn, limit_seconds, self.session_type)
-            return
+            # A fresh connection always supersedes whatever was live before -- see
+            # _current_conn's own comment. Discovery (_udp_loop) deliberately keeps
+            # running rather than stopping here, so a viewer whose IP changed (e.g. a
+            # new DHCP lease after a longer WiFi outage) can still relocate this host
+            # by device_id and reconnect.
+            if self._current_conn is not None:
+                try:
+                    self._current_conn.close()
+                except Exception:
+                    pass
+            self._current_conn = conn
+            # Dispatched to its own thread rather than handled inline -- this loop
+            # needs to keep accepting (the same viewer reconnecting after a brief
+            # drop, without Stop/Start Hosting) instead of blocking on whatever this
+            # connection's whole session takes.
+            threading.Thread(target=self.on_viewer_connected, args=(conn, limit_seconds, self.session_type),
+                              daemon=True).start()
 
 
 def discover_local_hosts(timeout=DISCOVERY_TIMEOUT):
