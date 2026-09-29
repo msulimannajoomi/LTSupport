@@ -90,6 +90,15 @@ class ViewerView:
                                             corner_radius=8, fg_color=theme.DANGER, hover_color=theme.DANGER_HOVER,
                                             text_color="white", command=self.close)
 
+        # Also shown only while reconnecting -- the automatic retry is already
+        # running in the background on its own schedule (a few quick attempts, then
+        # every 20s), but someone watching who can see the host is back online
+        # shouldn't have to just wait it out not knowing whether anything is
+        # happening at all. Cuts the current wait short and retries immediately.
+        self.retry_now_btn = ctk.CTkButton(control_bar, text="Retry Now", width=110, height=36, corner_radius=8,
+                                            fg_color=theme.BG, hover_color=theme.CARD_HOVER, text_color=theme.TEXT,
+                                            command=lambda: self.agent.retry_now())
+
         self.rec_label = ctk.CTkLabel(control_bar, text="● REC", font=theme.small(), text_color=theme.DANGER)
 
         # Always available, in both Normal and Interview Mode -- the host's system
@@ -353,17 +362,23 @@ class ViewerView:
                 self.trial_banner.pack(side="top", fill="x", before=self.text_bar)
         elif status == "reconnecting":
             # Never closes this window on its own, however long it takes -- see
-            # viewer_agent.py's _reconnect, which now keeps retrying indefinitely
-            # rather than giving up after a handful of attempts. Terminate Connection
-            # is the one explicit way to actually end it instead of waiting this out.
+            # viewer_agent.py's _reconnect/_reconnect_local, which keep retrying
+            # indefinitely (a few quick attempts, then every 20s) rather than giving
+            # up after a handful of attempts. Retry Now skips ahead to the next
+            # attempt immediately instead of waiting out its scheduled delay --
+            # useful the moment someone can see the host is back online. Terminate
+            # Connection is the one explicit way to actually end it instead of
+            # waiting this out.
             self.status_label.configure(
-                text=f"⚠ Connection lost — reconnecting… (attempt {info['attempt']})",
+                text=f"⚠ Connection lost — retrying automatically… (attempt {info['attempt']})",
                 text_color=theme.WARNING)
+            self.retry_now_btn.pack(side="left", padx=(0, 10), before=self.rec_label)
             self.terminate_btn.pack(side="left", padx=(0, 10), before=self.rec_label)
         elif status == "resumed":
             via = " (Local Network)" if self.local_target else ""
             mode = " — Interview Mode" if self.session_type == "interview" else ""
             self.status_label.configure(text=f"Connected — {self.device_id}{via}{mode}", text_color=theme.SUCCESS)
+            self.retry_now_btn.pack_forget()
             self.terminate_btn.pack_forget()
         elif status == "ended":
             reason = info.get("reason")
@@ -402,10 +417,13 @@ class ViewerView:
         elif status == "error":
             self.status_label.configure(text=info.get("message", "Connection error."), text_color=theme.DANGER)
         elif status == "disconnected":
-            # Only reachable now if reconnection gave up entirely rather than an
-            # ordinary blip (see viewer_agent.py's _reconnect) -- still doesn't close
-            # on its own; same persistent alert + Terminate Connection as
-            # "reconnecting", just worded for the fact that it's no longer retrying.
+            # In practice unreachable now short of a genuine bug -- both
+            # viewer_agent.py's _reconnect and _reconnect_local retry indefinitely
+            # (a network drop never gives up on its own any more, for either the
+            # relay or a Local Network session) and only ever stop because of an
+            # explicit close, which this status is never fired for at all (see
+            # _session_thread). Left in place defensively rather than assuming that
+            # can never change.
             if self._closed:
                 return
             self.status_label.configure(text="⚠ Connection lost. Click Terminate Connection to close, or wait for the host.",

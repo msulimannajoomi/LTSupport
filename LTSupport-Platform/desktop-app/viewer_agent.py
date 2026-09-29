@@ -67,6 +67,11 @@ class ViewerAgent:
         # unexplained disconnect on the receiving end.
         self._sock_lock = threading.Lock()
         self._explicit_close = False
+        # Lets a "Retry Now" button (see viewer_view.py) cut a reconnect attempt's
+        # wait short instead of the person just having to sit and wonder whether
+        # anything is happening -- .wait(timeout=delay) below returns early the
+        # moment this is set, same as a plain sleep would if the delay just elapsed.
+        self._retry_now_event = threading.Event()
 
     def _send(self, msg_type, payload=b""):
         with self._sock_lock:
@@ -157,7 +162,8 @@ class ViewerAgent:
             attempt += 1
             delay = RECONNECT_DELAYS[attempt - 1] if attempt <= len(RECONNECT_DELAYS) else RECONNECT_RETRY_INTERVAL
             if delay:
-                time.sleep(delay)
+                self._retry_now_event.wait(timeout=delay)
+                self._retry_now_event.clear()
             if not self.running or self._explicit_close:
                 return False
             self.on_status("reconnecting", {"attempt": attempt})
@@ -181,7 +187,8 @@ class ViewerAgent:
             attempt += 1
             delay = (LOCAL_RECONNECT_DELAYS[attempt - 1] if attempt <= len(LOCAL_RECONNECT_DELAYS)
                       else LOCAL_RECONNECT_RETRY_INTERVAL)
-            time.sleep(delay)
+            self._retry_now_event.wait(timeout=delay)
+            self._retry_now_event.clear()
             if not self.running or self._explicit_close:
                 return False
             self.on_status("reconnecting", {"attempt": attempt})
@@ -345,6 +352,16 @@ class ViewerAgent:
 
     def set_muted(self, muted):
         self.muted = muted
+
+    def retry_now(self):
+        """Cuts short whatever delay a pending reconnect attempt is currently waiting
+        out (see _reconnect/_reconnect_local) and makes it try immediately instead --
+        for a "Retry Now" button (viewer_view.py) so someone who can see the host is
+        back doesn't have to just wait out the next scheduled attempt not knowing
+        whether anything is happening at all. A no-op if nothing is currently
+        waiting (harmless either way -- the event is cleared again right before the
+        next real wait)."""
+        self._retry_now_event.set()
 
     def _heartbeat_loop(self):
         """Keeps the relay's idle-connection detection satisfied during stretches where
