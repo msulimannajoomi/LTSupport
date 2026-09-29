@@ -343,7 +343,8 @@ class ViewerView:
             self.session_type = self.agent.session_type
             via = " (Local Network)" if self.local_target else ""
             mode = " — Interview Mode" if self.session_type == "interview" else ""
-            self.status_label.configure(text=f"Connected — {self.device_id}{via}{mode}", text_color=theme.SUCCESS)
+            self.status_label.configure(text=f"Connected host: {self.agent.device_name}{via}{mode}",
+                                         text_color=theme.SUCCESS)
             self.recorder = SessionRecorder(self.device_id)
             self.rec_label.pack(side="left", padx=(0, 10), before=self.mute_btn)
             # Trial accounts only ever get their free-minutes window on a "normal"
@@ -377,7 +378,8 @@ class ViewerView:
         elif status == "resumed":
             via = " (Local Network)" if self.local_target else ""
             mode = " — Interview Mode" if self.session_type == "interview" else ""
-            self.status_label.configure(text=f"Connected — {self.device_id}{via}{mode}", text_color=theme.SUCCESS)
+            self.status_label.configure(text=f"Connected host: {self.agent.device_name}{via}{mode}",
+                                         text_color=theme.SUCCESS)
             self.retry_now_btn.pack_forget()
             self.terminate_btn.pack_forget()
         elif status == "ended":

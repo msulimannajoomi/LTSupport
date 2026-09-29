@@ -130,6 +130,26 @@ class HostAgent:
         self._limit_timer = None
         self._session_started_at = None
         self._usage_reported = False
+        # Local Network mode's billing/limit clock only ever runs while a viewer is
+        # actually connected -- a WiFi drop-and-reconnect (see
+        # _on_local_viewer_connected) must never be billed, or burn through a
+        # trial's time limit, just for sitting idle waiting to resume. Wall-clock
+        # from the very first connection was what _session_started_at used to mean
+        # here; _active_seconds is the real total instead (sum of every connected
+        # segment), and _segment_started_at is when the CURRENT one began (None
+        # while disconnected). _limit_seconds is the plan/trial allowance itself,
+        # captured once and never re-taken from a later reconnect's fresh
+        # check_session result.
+        self._active_seconds = 0.0
+        self._segment_started_at = None
+        self._limit_seconds = None
+        # Guards _finish_session against running twice -- it's now reachable both
+        # from this agent's own explicit stop() and (for Local Network mode) from
+        # the connection thread noticing there's nothing left to wait for. A plain
+        # lock, not just a bool, since those two can genuinely race on separate
+        # threads.
+        self._finished = False
+        self._finish_lock = threading.Lock()
         # Bumped each time a NEW socket takes over mid-run (Local Network mode only --
         # see _on_local_viewer_connected/local_link.py's own reconnect-by-superseding).
         # _capture_loop/_audio_loop each capture the generation they were started
@@ -225,6 +245,14 @@ class HostAgent:
                 self.sock.close()
             except Exception:
                 pass
+        # For Local Network mode, nothing else guarantees this ever gets called: if
+        # Stop Hosting is clicked during the idle gap between one viewer dropping
+        # and a possible reconnect, there's no connection thread left running to
+        # reach _on_local_viewer_connected's own equivalent call (see there) --
+        # this covers that case, and the guard in _finish_session makes it a safe
+        # no-op the rest of the time (relay mode's own thread still reaches it too,
+        # exactly as before).
+        self._finish_session()
 
     def _start_recording(self):
         try:
@@ -282,6 +310,7 @@ class HostAgent:
         self.local_server = local_link.LocalHostServer(
             self.device_id, self._verify_peer, self._check_session, self._on_local_viewer_connected,
             machine_id=device_store.load_machine_id(), session_type=self._session_type,
+            device_name=self.device_name,
         )
         self.local_server.start()
 
@@ -309,10 +338,11 @@ class HostAgent:
         # was live, exactly so a WiFi drop-and-reconnect resumes this same run instead
         # of requiring Stop/Start Hosting again. `first_connection` distinguishes that
         # genuinely first call from a later resume: only the first one stamps
-        # _session_started_at, starts the recorder, and arms the plan/trial limit
-        # timer -- a resume must never reset any of those, or a network blip would
-        # look like free extra session time, or restart the recording as a second
-        # file.
+        # _session_started_at and starts the recorder -- a resume must never reset
+        # either, or restart the recording as a second file. The plan/trial limit
+        # timer, unlike those, DOES need rearming on every (re)connection -- see
+        # _arm_local_limit_timer -- since it has to stop counting down during the
+        # disconnected gap in between.
         first_connection = self.sock is None
         self.sock = sock
         self._capture_generation += 1
@@ -321,10 +351,8 @@ class HostAgent:
             self._session_started_at = time.time()
             self._usage_reported = False
             self._start_recording()
-            if limit_seconds is not None:
-                self._limit_timer = threading.Timer(limit_seconds, self._local_limit_reached)
-                self._limit_timer.daemon = True
-                self._limit_timer.start()
+        self._segment_started_at = time.time()
+        self._arm_local_limit_timer(limit_seconds)
         # Host system audio -> viewer runs in both Normal and Interview Mode -- see the
         # matching comment in _recv_loop's TYPE_VIEWER_JOINED branch (the relay-mode
         # path). Restarted on every (re)connection, not just the first -- unlike the
@@ -337,14 +365,52 @@ class HostAgent:
         threading.Thread(target=self._capture_loop, args=(my_generation,), daemon=True).start()
         self.on_status("viewer_joined", {"session_type": self._session_type})
         self._recv_loop()
-        # This leg of the connection ended -- for any reason. If local_server is still
-        # around waiting (an ordinary drop, not this host's own Stop Hosting), there's
-        # a real chance the same viewer reconnects and this method runs again on a
-        # fresh socket -- nothing here is torn down yet, same as the relay-mode
-        # equivalent (_run_relay's own retry loop).
+        # This leg of the connection ended -- for any reason. Bank whatever time this
+        # segment actually ran (see _end_local_segment) regardless of what happens
+        # next -- a disconnected gap must never be billed or count against the plan
+        # limit, whether or not the same viewer reconnects into it.
+        self._end_local_segment()
+        # If local_server is still around waiting (an ordinary drop, not this host's
+        # own Stop Hosting), there's a real chance the same viewer reconnects and
+        # this method runs again on a fresh socket -- nothing else is torn down yet,
+        # same as the relay-mode equivalent (_run_relay's own retry loop).
         if self.running and self.local_server and self.local_server.running:
             return
         self._finish_session()
+
+    def _arm_local_limit_timer(self, limit_seconds):
+        """(Re)arms the plan/trial time limit for Local Network mode against actual
+        connected time only. `limit_seconds` is this connection's own fresh
+        check_session result, but only ever adopted the first time (self._limit_seconds
+        starts None) -- every later reconnect measures the *remaining* allowance
+        against that same original figure instead, via self._active_seconds (which
+        _end_local_segment keeps accurate across disconnected gaps)."""
+        if self._limit_seconds is None:
+            self._limit_seconds = limit_seconds
+        if self._limit_seconds is None:
+            return
+        remaining = self._limit_seconds - self._active_seconds
+        if remaining <= 0:
+            self._local_limit_reached()
+            return
+        self._limit_timer = threading.Timer(remaining, self._local_limit_reached)
+        self._limit_timer.daemon = True
+        self._limit_timer.start()
+
+    def _end_local_segment(self):
+        """Local Network mode only -- called whenever a connection segment ends, for
+        any reason (a deliberate viewer Disconnect, a network drop, or Stop
+        Hosting), whether or not a reconnect follows. Banks the segment's elapsed
+        time into self._active_seconds and cancels the limit timer, so a
+        disconnected gap waiting for the same viewer to reconnect (see
+        _on_local_viewer_connected) never gets billed and never ticks down the
+        plan/trial time limit while nobody is actually connected."""
+        if self._limit_timer:
+            self._limit_timer.cancel()
+            self._limit_timer = None
+        if self._segment_started_at is not None:
+            self._active_seconds += time.time() - self._segment_started_at
+            self._segment_started_at = None
 
     def _local_limit_reached(self):
         message = {"code": "PLAN_LIMIT_REACHED", "message": "Your session time limit was reached."}
@@ -352,6 +418,12 @@ class HostAgent:
             self._send(proto.TYPE_TRIAL_LIMIT, message)
         except Exception:
             pass
+        # Banks this final (still-active) segment before reporting -- this can fire
+        # while a viewer is still connected, so self._segment_started_at is live at
+        # this point. _on_local_viewer_connected's own call to this same method,
+        # once the socket close below unblocks its _recv_loop, is then a no-op
+        # (segment already ended).
+        self._end_local_segment()
         self._report_local_usage()
         try:
             self.sock.close()
@@ -362,9 +434,10 @@ class HostAgent:
         if self._usage_reported or not self.api or self._session_started_at is None:
             return
         self._usage_reported = True
-        minutes = (time.time() - self._session_started_at) / 60
+        minutes = self._active_seconds / 60
         try:
-            self.api.session_report(minutes, self._session_type, device_id=self.device_id or "")
+            self.api.session_report(minutes, self._session_type, device_id=self.device_id or "",
+                                     device_name=self.device_name or "")
         except Exception:
             pass
 
@@ -792,11 +865,20 @@ class HostAgent:
         return False
 
     def _finish_session(self):
+        # Guards against running twice -- reachable both from this agent's own
+        # explicit stop() and (Local Network mode) from _on_local_viewer_connected
+        # noticing there's nothing left to wait for; those can genuinely race on
+        # separate threads, hence the lock rather than a plain bool check.
+        with self._finish_lock:
+            if self._finished:
+                return
+            self._finished = True
         self.running = False
         _show_system_cursor()  # defensive: in case the session ended while still in Control Mode
         if self._limit_timer:
             self._limit_timer.cancel()
         if self.local_mode:
+            self._end_local_segment()
             self._report_local_usage()
         self.on_status("offline", {})
 

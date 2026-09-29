@@ -206,15 +206,20 @@ def record_session_usage(org_id, minutes_used, free_minutes=0, rate_per_hour=1):
 
 def log_session(org_id, device_id, session_type, account_type, started_at, ended_at,
                  duration_minutes, billed_minutes=0.0, amount_charged=0.0, end_reason="",
-                 member_username=None):
+                 member_username=None, device_name=None):
     """member_username identifies WHICH team-member login actually did the joining/
     support work (see relay.py/app.py's call sites) -- None for a session run under
     the org's own original login directly (there's no such thing any more for a real
     "normal" support session, since only a team member can host or join now, but kept
-    optional rather than required in case anything ever calls this without one)."""
+    optional rather than required in case anything ever calls this without one).
+    device_name is captured here, as of this exact session, rather than looked up
+    later from the devices collection -- a device can be renamed or removed after
+    the fact, and the activity log should keep showing whatever it was actually
+    called at the time, not silently change or go blank."""
     _get_db().session_logs.insert_one({
         "org_id": org_id,
         "device_id": device_id,
+        "device_name": device_name or device_id,
         "session_type": session_type,
         "account_type": account_type,
         "started_at": started_at,

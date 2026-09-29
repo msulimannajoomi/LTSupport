@@ -49,6 +49,11 @@ class ViewerAgent:
         # Not known until the host responds -- the host alone decides Normal vs Interview
         # at Start Hosting, the viewer never requests or chooses it.
         self.session_type = "normal"
+        # The name the host's own user typed in on their Host screen (see
+        # host_view.py) -- also only known once the handshake replies. Falls back to
+        # device_id itself if the host never set one (an older build, or a
+        # LOCAL-hostname fallback id).
+        self.device_name = device_id
         # Also only known once the handshake replies -- None means unrestricted
         # (postpaid, or an Interview session). Used only for the trial-account "you can
         # continue for N minutes" notice in viewer_view.py; the account_type driving
@@ -95,7 +100,7 @@ class ViewerAgent:
         try:
             if self.local_target:
                 ip, port = self.local_target
-                sock, limit_seconds, session_type, err = local_link.connect_local(
+                sock, limit_seconds, session_type, device_name, err = local_link.connect_local(
                     ip, port, self.session_token, self.device_id,
                     machine_id=device_store.load_machine_id())
                 if sock is None:
@@ -104,6 +109,7 @@ class ViewerAgent:
                     return False
                 self.session_type = session_type
                 self.limit_seconds = limit_seconds
+                self.device_name = device_name or self.device_id
             else:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(15)  # matches the relay's own HELLO_TIMEOUT
@@ -125,6 +131,7 @@ class ViewerAgent:
                 session_type = info.get("session_type")
                 self.session_type = session_type if session_type in ("normal", "interview") else "normal"
                 self.limit_seconds = info.get("limit_seconds")
+                self.device_name = info.get("device_name") or self.device_id
 
             try:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -198,7 +205,7 @@ class ViewerAgent:
             if not self.running or self._explicit_close:
                 return False
             try:
-                for found_id, ip, port, _session_type in local_link.discover_local_hosts(
+                for found_id, ip, port, _session_type, _device_name in local_link.discover_local_hosts(
                         timeout=LOCAL_REDISCOVER_TIMEOUT):
                     if found_id == self.device_id:
                         self.local_target = (ip, port)

@@ -38,6 +38,7 @@ from views.viewer_view import ViewerView
 from views.billing_view import BillingView
 from views.users_view import UsersView
 from views.activity_logs_view import ActivityLogsView
+from views.devices_view import DevicesView
 
 
 class App(ctk.CTk):
@@ -86,6 +87,9 @@ class App(ctk.CTk):
 
     def show_activity_logs(self):
         self._swap(ActivityLogsView)
+
+    def show_devices(self):
+        self._swap(DevicesView)
 
     def open_viewer(self, device_id, local_target=None):
         top = ctk.CTkToplevel(self)

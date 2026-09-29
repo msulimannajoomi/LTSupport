@@ -1,6 +1,7 @@
 import socket
 import customtkinter as ctk
 
+import device_store
 import theme
 from host_agent import HostAgent
 
@@ -27,7 +28,13 @@ class HostView(ctk.CTkFrame):
         ctk.CTkLabel(inner, text="Host This Computer", font=theme.h1(), text_color=theme.TEXT).pack(anchor="w")
         ctk.CTkLabel(inner, text="Share this PC so you can access or support it remotely.",
                      font=theme.body(), text_color=theme.TEXT_MUTED, wraplength=360,
-                     justify="left").pack(anchor="w", pady=(6, 28))
+                     justify="left").pack(anchor="w", pady=(6, 20))
+
+        ctk.CTkLabel(inner, text="DEVICE NAME", font=theme.small(), text_color=theme.TEXT_MUTED).pack(anchor="w")
+        self.device_name_entry = ctk.CTkEntry(inner, height=38, corner_radius=8,
+                                               placeholder_text=socket.gethostname())
+        self.device_name_entry.insert(0, device_store.load_device_name() or socket.gethostname())
+        self.device_name_entry.pack(fill="x", pady=(4, 20))
 
         status_row = ctk.CTkFrame(inner, fg_color=theme.BG, corner_radius=10)
         status_row.pack(fill="x", pady=(0, 20))
@@ -60,36 +67,25 @@ class HostView(ctk.CTkFrame):
         self.session_type_selector = ctk.CTkSegmentedButton(inner, values=["Normal", "Interview"])
         self.session_type_selector.set("Normal")
         self.session_type_selector.pack(fill="x", pady=(4, 4))
-        ctk.CTkLabel(inner, text="Interview Mode shares two-way voice and isn't limited by your "
-                                  "plan/balance -- only whether this account is blocked. Whoever "
-                                  "connects to this device gets the mode you pick here; they have no "
-                                  "way to change it.",
+        ctk.CTkLabel(inner, text="Interview Mode adds two-way voice and isn't limited by your plan.",
                      font=theme.small(), text_color=theme.TEXT_MUTED, wraplength=360,
                      justify="left").pack(anchor="w", pady=(0, 16))
 
         self.local_mode_var = ctk.BooleanVar(value=False)
-        self.local_mode_check = ctk.CTkCheckBox(
+        self.local_mode_switch = ctk.CTkSwitch(
             inner, text="Connect over Local Network (WiFi) instead of the Internet",
-            variable=self.local_mode_var, font=theme.small(), text_color=theme.TEXT_MUTED,
+            variable=self.local_mode_var, onvalue=True, offvalue=False,
+            progress_color=theme.ACCENT, font=theme.small(), text_color=theme.TEXT_MUTED,
         )
-        self.local_mode_check.pack(anchor="w", pady=(0, 4))
-        ctk.CTkLabel(inner, text="Only reachable by a viewer on the same WiFi/network. Faster and "
-                                  "uses no internet bandwidth for the session itself -- your plan is "
-                                  "still checked and updated online at the start and end of the session.",
-                     font=theme.small(), text_color=theme.TEXT_MUTED, wraplength=360,
-                     justify="left").pack(anchor="w", pady=(0, 16))
+        self.local_mode_switch.pack(anchor="w", pady=(0, 16))
 
         self.toggle_btn = ctk.CTkButton(inner, text="Start Hosting", height=44, corner_radius=8,
                                          fg_color=theme.SUCCESS, hover_color=theme.SUCCESS_HOVER, text_color="white",
                                          font=theme.h3(), command=self.toggle)
         self.toggle_btn.pack(fill="x")
 
-        ctk.CTkLabel(inner, text="Once a viewer connects, this window disappears completely -- no "
-                                  "taskbar entry, no tray icon -- this computer's system audio (whatever "
-                                  "is playing) becomes audible on the viewer's end, and the whole session "
-                                  "is recorded. If they disconnect, this device stays online waiting for "
-                                  "the next viewer, still hidden. Ending the session is up to whoever's "
-                                  "connected from there on.",
+        ctk.CTkLabel(inner, text="Once someone connects, this window hides completely and the "
+                                  "session is recorded.",
                      font=theme.small(), text_color=theme.TEXT_MUTED, wraplength=360,
                      justify="left").pack(anchor="w", pady=(16, 0))
 
@@ -113,11 +109,14 @@ class HostView(ctk.CTkFrame):
 
     def _start(self):
         self.toggle_btn.configure(state="disabled", text="Starting...")
-        self.local_mode_check.configure(state="disabled")
+        self.local_mode_switch.configure(state="disabled")
         self.session_type_selector.configure(state="disabled")
+        self.device_name_entry.configure(state="disabled")
         local_mode = self.local_mode_var.get()
         session_type = self.session_type_selector.get().lower()
-        self.agent = HostAgent(self.app.api.token, socket.gethostname(), self._on_status,
+        device_name = self.device_name_entry.get().strip() or socket.gethostname()
+        device_store.save_device_name(device_name)
+        self.agent = HostAgent(self.app.api.token, device_name, self._on_status,
                                 api=self.app.api, local_mode=local_mode, session_type=session_type)
         self.agent.start()
 
@@ -131,8 +130,9 @@ class HostView(ctk.CTkFrame):
         self.status_dot.configure(text_color=theme.TEXT_MUTED)
         self.status_label.configure(text="Not hosting")
         self.toggle_btn.configure(state="normal", text="Start Hosting", fg_color=theme.SUCCESS, hover_color=theme.SUCCESS_HOVER)
-        self.local_mode_check.configure(state="normal")
+        self.local_mode_switch.configure(state="normal")
         self.session_type_selector.configure(state="normal")
+        self.device_name_entry.configure(state="normal")
         self.copy_id_btn.configure(state="disabled")
         self.instructions_label.configure(text="")
 
@@ -160,15 +160,12 @@ class HostView(ctk.CTkFrame):
             if self.agent.local_mode:
                 self.status_label.configure(text=f"Hosting — waiting for a viewer (Local Network){mode_label}")
                 self.instructions_label.configure(
-                    text=f"To connect: on the other computer, open VantagePoint (same WiFi network), "
-                         f"log in to the same account, and go to the Dashboard — this PC will show up "
-                         f"as {device_id} in the device list, reachable over the local network. If it "
-                         f"isn't found, type the ID above into the device-id box instead.")
+                    text="On the other PC (same WiFi): open VantagePoint, log in, and pick this "
+                         f"device from the list — or paste {device_id} directly.")
             else:
                 self.status_label.configure(text=f"Hosting — waiting for a viewer{mode_label}")
                 self.instructions_label.configure(
-                    text=f"To connect: on the other computer, open VantagePoint, log in, go to the "
-                         f"Dashboard, and under \"Join a Device\" paste this ID: {device_id}")
+                    text=f"On the other PC: open VantagePoint, log in, and paste this ID: {device_id}")
             self.toggle_btn.configure(state="normal", text="Stop Hosting", fg_color=theme.DANGER, hover_color=theme.DANGER_HOVER)
             self.agent.launch_overlay(self.app)
         elif status == "reconnecting":
@@ -192,8 +189,9 @@ class HostView(ctk.CTkFrame):
             self.status_dot.configure(text_color=theme.DANGER)
             self.status_label.configure(text=info.get("message", "Error"))
             self.toggle_btn.configure(state="normal", text="Start Hosting")
-            self.local_mode_check.configure(state="normal")
+            self.local_mode_switch.configure(state="normal")
             self.session_type_selector.configure(state="normal")
+            self.device_name_entry.configure(state="normal")
             self.agent = None
         elif status == "offline":
             # Fires at the end of every hosting attempt, for any reason. A viewer's

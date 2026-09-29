@@ -176,13 +176,16 @@ class ApiClient:
         only the account's blocked status is checked."""
         return self._post("/api/session/check", {"session_type": session_type})
 
-    def session_report(self, minutes, session_type="normal", device_id=""):
+    def session_report(self, minutes, session_type="normal", device_id="", device_name=""):
         """For a local/WiFi-direct session: applies the same bookkeeping the relay
         applies automatically for internet sessions -- balance+counters for "normal",
         or the separate interview_* counters for "interview" -- and logs the session
-        (device_id ties the log entry to which device was hosted)."""
+        (device_id ties the log entry to which device was hosted; device_name is sent
+        directly since a Local Network run has no backend device record to look it up
+        from)."""
         return self._post("/api/session/report",
-                           {"minutes": minutes, "session_type": session_type, "device_id": device_id})
+                           {"minutes": minutes, "session_type": session_type, "device_id": device_id,
+                            "device_name": device_name})
 
     def verify_peer(self, peer_token):
         """For a local/WiFi-direct session: confirms a connecting viewer's own token

@@ -363,7 +363,7 @@ async def _handle_observer(reader, writer, user, host_conn):
 
 
 async def _bill_and_log_session(org_id, device_id, session_type, account_type, session_started, ended_at,
-                                 end_reason, member_username):
+                                 end_reason, member_username, device_name=None):
     """Shared by every path that ends a viewer's billable session (grace expiring, a
     deliberate viewer close, or the plan/balance limit being hit) -- applies the same
     usage bookkeeping and activity-log entry regardless of which one it was."""
@@ -378,7 +378,7 @@ async def _bill_and_log_session(org_id, device_id, session_type, account_type, s
     await asyncio.to_thread(
         db.log_session, org_id, device_id, session_type, account_type,
         _iso(session_started), _iso(ended_at), elapsed_minutes, billed_minutes, amount_charged,
-        end_reason, member_username=member_username)
+        end_reason, member_username=member_username, device_name=device_name or device_id)
 
 
 async def _expire_grace(host_conn, org_id, session_type, session_started, account_type, member_username):
@@ -401,7 +401,8 @@ async def _expire_grace(host_conn, org_id, session_type, session_started, accoun
     if host_conn.viewer_connected_at == session_started:
         host_conn.viewer_connected_at = None
     await _bill_and_log_session(org_id, host_conn.device_id, session_type, account_type,
-                                 session_started, time.time(), "viewer_disconnected", member_username)
+                                 session_started, time.time(), "viewer_disconnected", member_username,
+                                 device_name=host_conn.name)
     try:
         await _send(host_conn.writer, p.TYPE_SESSION_END, {"reason": "viewer_disconnected"})
     except Exception:
@@ -546,7 +547,8 @@ async def _handle_viewer(reader, writer, user, data):
             host_conn.viewer_connected_at = None
         ended_at = time.time()
         await _bill_and_log_session(user["org_id"], device_id, session_type, account_type,
-                                     session_started, ended_at, "plan_limit_reached", member_username)
+                                     session_started, ended_at, "plan_limit_reached", member_username,
+                                     device_name=host_conn.name)
         message = {
             "code": "PLAN_LIMIT_REACHED",
             "message": plan.limit_reached_message(user, config.TRIAL_SESSION_LIMIT_SECONDS, config.UPGRADE_CONTACT_NUMBER),
@@ -567,7 +569,8 @@ async def _handle_viewer(reader, writer, user, data):
         host_conn.viewer = None
         host_conn.viewer_connected_at = None
         await _bill_and_log_session(user["org_id"], device_id, session_type, account_type,
-                                     session_started, time.time(), "viewer_disconnected", member_username)
+                                     session_started, time.time(), "viewer_disconnected", member_username,
+                                     device_name=host_conn.name)
         try:
             await _send(host_conn.writer, p.TYPE_SESSION_END, {"reason": "viewer_disconnected"})
         except Exception:

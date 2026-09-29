@@ -65,6 +65,11 @@ class SessionReportPayload(BaseModel):
     minutes: float
     session_type: str = "normal"
     device_id: str = ""
+    # A Local Network hosting run has no backend "devices" record at all (it never
+    # touches db.upsert_device -- see relay.py, which local mode bypasses entirely),
+    # so there's nowhere server-side to look this up from; the desktop app sends its
+    # own already-known device_name directly instead.
+    device_name: str = ""
 
 
 class VerifyPeerPayload(BaseModel):
@@ -558,7 +563,8 @@ def session_report(payload: SessionReportPayload, authorization: str = Header(de
             user["org_id"], minutes, config.PREPAID_FREE_MINUTES_PER_SESSION, config.PREPAID_RATE_PER_HOUR_CENTS)
     db.log_session(user["org_id"], payload.device_id, session_type, user["account_type"],
                     started_at.isoformat(), ended_at.isoformat(), minutes, billed_minutes, amount_charged,
-                    "local_session_ended", member_username=user.get("member_username"))
+                    "local_session_ended", member_username=user.get("member_username"),
+                    device_name=payload.device_name or payload.device_id)
     return {"ok": True}
 
 
@@ -574,6 +580,7 @@ def list_logs(authorization: str = Header(default="")):
     logs = db.list_session_logs(user["org_id"])
     return {"logs": [{
         "device_id": l.get("device_id", ""),
+        "device_name": l.get("device_name") or l.get("device_id", ""),
         "session_type": l.get("session_type", ""),
         "account_type": l.get("account_type", ""),
         "started_at": l.get("started_at", ""),

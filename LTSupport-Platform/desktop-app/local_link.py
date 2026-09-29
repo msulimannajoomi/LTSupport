@@ -48,12 +48,17 @@ def _recv_json_line(sock, max_bytes=4096):
 
 class LocalHostServer:
     def __init__(self, device_id, verify_peer, check_session, on_viewer_connected, machine_id=None,
-                 session_type="normal"):
+                 session_type="normal", device_name=None):
         self.device_id = device_id
         self.verify_peer = verify_peer               # callable(peer_token) -> bool (same account as this host?)
         self.check_session = check_session          # callable(session_type) -> (allowed, limit_seconds, message)
         self.on_viewer_connected = on_viewer_connected  # callback(sock, limit_seconds, session_type)
         self.machine_id = machine_id  # this host's own machine id, to refuse a same-machine viewer
+        # The name the user themselves typed in on the Host screen (see host_view.py)
+        # -- advertised over both discovery and the handshake so a viewer sees a real
+        # label instead of just a device_id, especially useful with several devices
+        # listed at once.
+        self.device_name = device_name or device_id
         # Chosen by the HOST at Start Hosting -- a connecting viewer has no say in this.
         self.session_type = session_type if session_type in ("normal", "interview") else "normal"
         self.running = False
@@ -101,7 +106,7 @@ class LocalHostServer:
                 reply = json.dumps({
                     "magic": MAGIC, "type": "host",
                     "device_id": self.device_id, "port": LOCAL_TCP_PORT,
-                    "session_type": self.session_type,
+                    "session_type": self.session_type, "device_name": self.device_name,
                 }).encode("utf-8")
                 self._udp_sock.sendto(reply, addr)
                 print(f"[LocalLink] Discovery request from {addr[0]} -- replied with device_id={self.device_id}")
@@ -162,7 +167,7 @@ class LocalHostServer:
 
                 conn.settimeout(None)
                 _send_json_line(conn, {"magic": MAGIC, "ok": True, "limit_seconds": limit_seconds,
-                                        "session_type": self.session_type})
+                                        "session_type": self.session_type, "device_name": self.device_name})
             except Exception as e:
                 print(f"[LocalLink] Handshake failed: {type(e).__name__}: {e}")
                 try:
@@ -192,8 +197,9 @@ class LocalHostServer:
 
 def discover_local_hosts(timeout=DISCOVERY_TIMEOUT):
     """Broadcasts a UDP discovery request on the LAN and collects replies. Returns a list
-    of (device_id, ip, port, session_type) tuples for hosts currently in Local Network
-    mode -- session_type is whatever that host was configured with at Start Hosting.
+    of (device_id, ip, port, session_type, device_name) tuples for hosts currently in
+    Local Network mode -- session_type and device_name are whatever that host was
+    configured with at Start Hosting.
 
     A single UDP broadcast is easy to lose (weak WiFi signal, a busy AP) with nothing to
     retry it -- resending every 500ms for the whole window costs nothing extra (hosts just
@@ -225,7 +231,8 @@ def discover_local_hosts(timeout=DISCOVERY_TIMEOUT):
                         session_type = "normal"
                     if msg["device_id"] not in results:
                         print(f"[LocalLink] Discovery reply from {addr[0]}: device_id={msg['device_id']}")
-                    results[msg["device_id"]] = (msg["device_id"], addr[0], msg["port"], session_type)
+                    device_name = msg.get("device_name") or msg["device_id"]
+                    results[msg["device_id"]] = (msg["device_id"], addr[0], msg["port"], session_type, device_name)
             except socket.timeout:
                 continue
             except Exception:
@@ -244,8 +251,9 @@ def discover_local_hosts(timeout=DISCOVERY_TIMEOUT):
 def connect_local(ip, port, session_token, device_id, machine_id=None,
                    connect_timeout=5.0, reply_timeout=30.0):
     """Connects directly to a host on the LAN. Returns (sock, limit_seconds, session_type,
-    error_message). sock is None on failure. session_type is whatever the host is
-    configured with -- the viewer has no say in it, only learns it from the reply.
+    device_name, error_message). sock is None on failure. session_type and device_name
+    are whatever the host is configured with -- the viewer has no say in either, only
+    learns them from the reply.
 
     Two different timeouts on purpose: the TCP connect itself is on the same LAN and
     should be near-instant, but before the host can reply it makes two sequential REST
@@ -264,7 +272,7 @@ def connect_local(ip, port, session_token, device_id, machine_id=None,
         if not reply or not reply.get("ok"):
             message = reply.get("message") if reply else "No response from that device."
             sock.close()
-            return None, None, None, message or "Connection rejected."
+            return None, None, None, None, message or "Connection rejected."
         sock.settimeout(None)
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -273,10 +281,11 @@ def connect_local(ip, port, session_token, device_id, machine_id=None,
         session_type = reply.get("session_type")
         if session_type not in ("normal", "interview"):
             session_type = "normal"
-        return sock, reply.get("limit_seconds"), session_type, None
+        device_name = reply.get("device_name") or device_id
+        return sock, reply.get("limit_seconds"), session_type, device_name, None
     except Exception as e:
         try:
             sock.close()
         except Exception:
             pass
-        return None, None, None, str(e)
+        return None, None, None, None, str(e)

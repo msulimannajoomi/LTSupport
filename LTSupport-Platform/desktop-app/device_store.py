@@ -52,6 +52,21 @@ def save_device_id(device_id, org_id=None):
     _save(data)
 
 
+def load_device_name():
+    """The name the user themselves last typed in on the Host screen -- persisted so
+    it's pre-filled next time instead of asking again, but only ever a *default* to
+    edit or clear, never forced (see host_view.py). Not account-scoped like
+    device_id (a name is just a convenience label, not an identity worth resetting
+    on every account switch)."""
+    return _load().get("device_name", "")
+
+
+def save_device_name(device_name):
+    data = _load()
+    data["device_name"] = device_name
+    _save(data)
+
+
 def load_machine_id():
     """A random id generated once per installation (independent of account/device_id),
     used only to detect a viewer connecting from the same physical machine it's hosting

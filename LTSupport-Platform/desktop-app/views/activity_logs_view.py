@@ -83,7 +83,7 @@ class ActivityLogsView(ctk.CTkFrame):
             inner.pack(fill="x", padx=16, pady=10)
 
             member = log.get("member_username") or "—"
-            device = log.get("device_id") or "—"
+            device = log.get("device_name") or log.get("device_id") or "—"
             started = (log.get("started_at") or "")[:16].replace("T", " ") or "—"
             duration = f"{log.get('duration_minutes', 0):.1f} min"
             end_reason = {
