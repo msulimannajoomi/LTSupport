@@ -35,10 +35,8 @@ class ActivityLogsView(ctk.CTkFrame):
                                           font=theme.small(), command=self.reload)
         self.refresh_btn.pack(side="right")
 
-        ctk.CTkLabel(scroll, text="Every session any team member has run -- which device, when, for how "
-                                   "long, and how it ended. Most recent first.",
-                     font=theme.body(), text_color=theme.TEXT_MUTED, wraplength=900,
-                     justify="left").pack(anchor="w", pady=(4, 24))
+        ctk.CTkLabel(scroll, text="Every session run, most recent first.",
+                     font=theme.body(), text_color=theme.TEXT_MUTED).pack(anchor="w", pady=(4, 24))
 
         self.list_container = ctk.CTkFrame(scroll, fg_color="transparent")
         self.list_container.pack(fill="x")

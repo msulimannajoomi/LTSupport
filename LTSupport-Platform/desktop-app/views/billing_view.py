@@ -77,8 +77,7 @@ class BillingView(ctk.CTkFrame):
             self._banner(
                 theme.DANGER,
                 "⛔  ACCOUNT BLOCKED",
-                "Hosting and joining are disabled for this organization, including "
-                "Interview Mode sessions, until this is lifted. Contact support.",
+                "Hosting and joining are disabled until this is lifted. Contact support.",
             )
             return
 
@@ -203,9 +202,9 @@ class BillingView(ctk.CTkFrame):
             ctk.CTkLabel(inner, text="Prepaid gets you:", font=theme.body(),
                          text_color=theme.TEXT_MUTED).pack(anchor="w", pady=(10, 6))
             for line in [
-                "No daily session limit -- Trial is capped at 3 sessions/day",
+                "No daily session limit",
                 "First 10 minutes of every session still free",
-                "Only $5.00/hour beyond that, billed by the hour -- pay only for what you use",
+                "$5.00/hour beyond that",
             ]:
                 row = ctk.CTkFrame(inner, fg_color="transparent")
                 row.pack(fill="x", pady=(2, 0))
@@ -215,13 +214,11 @@ class BillingView(ctk.CTkFrame):
             # Matches the interim _do_buy swap (see its own comment) -- update this
             # copy back to "Stripe's own checkout page handles the amount" once that
             # swap is reverted.
-            ctk.CTkLabel(inner, text="Click below and enter your email -- our team will reach out to "
-                                      "get you upgraded.",
+            ctk.CTkLabel(inner, text="Enter your email below — our team will reach out.",
                          font=theme.small(), text_color=theme.TEXT_MUTED, wraplength=700,
                          justify="left").pack(anchor="w", pady=(12, 16))
         else:
-            ctk.CTkLabel(inner, text="$5 per hour, one hour minimum. Click below and enter your email "
-                                      "-- our team will reach out to get you set up.",
+            ctk.CTkLabel(inner, text="$5/hour, one hour minimum. Enter your email below.",
                          font=theme.body(), text_color=theme.TEXT_MUTED, wraplength=700,
                          justify="left").pack(anchor="w", pady=(6, 16))
 
@@ -235,8 +232,7 @@ class BillingView(ctk.CTkFrame):
         self.buy_status_label.pack(anchor="w", pady=(10, 0))
 
         contact = self.app.api.upgrade_contact_number or "support"
-        ctk.CTkLabel(inner, text=f"Want Postpaid instead (unlimited, billed separately), or trouble "
-                                  f"paying? Call {contact}.",
+        ctk.CTkLabel(inner, text=f"Need something else? Call {contact}.",
                      font=theme.small(), text_color=theme.TEXT_MUTED, wraplength=700,
                      justify="left").pack(anchor="w", pady=(12, 0))
 
@@ -266,9 +262,8 @@ class BillingView(ctk.CTkFrame):
         webbrowser.open(checkout_url)
         self.buy_btn.configure(state="normal", text=self._buy_label)
         self.buy_status_label.configure(
-            text="Complete your payment in the browser window that just opened. Your balance "
-                 "updates automatically once the payment is confirmed -- click 🔄 Refresh above "
-                 "afterward to see it.",
+            text="Complete your payment in the browser window that just opened, then click "
+                 "🔄 Refresh above.",
             text_color=theme.TEXT)
 
     def _buy_failed(self, message):

@@ -70,9 +70,7 @@ class DashboardView(ctk.CTkFrame):
             join_card.grid(row=0, column=0, columnspan=2, sticky="nsew")
         else:
             host_card = self._action_card(cards, "🖥️ Host This Computer",
-                                           "Pick this if YOU are the one being helped. This computer "
-                                           "becomes visible and controllable by whoever you share the "
-                                           "Device ID with.",
+                                           "Let someone else see and control this PC.",
                                            theme.SUCCESS, app.show_host, disabled=blocked, hover_color=theme.SUCCESS_HOVER)
             host_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
 

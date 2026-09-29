@@ -30,12 +30,8 @@ class UsersView(ctk.CTkFrame):
                       command=self.app.show_dashboard).pack(side="left")
 
         ctk.CTkLabel(scroll, text="Team Members", font=theme.h1(), text_color=theme.TEXT).pack(anchor="w")
-        ctk.CTkLabel(scroll, text="Logins that can host and take full control -- separate from your own "
-                                   "Organization ID login, which never hosts or takes control itself and "
-                                   "isn't listed here. Your own login can watch any of these devices at "
-                                   "any time, live sessions included, without disturbing them.",
-                     font=theme.body(), text_color=theme.TEXT_MUTED, wraplength=900,
-                     justify="left").pack(anchor="w", pady=(4, 24))
+        ctk.CTkLabel(scroll, text="Logins that can host and take full control.",
+                     font=theme.body(), text_color=theme.TEXT_MUTED).pack(anchor="w", pady=(4, 24))
 
         add_card = ctk.CTkFrame(scroll, fg_color=theme.CARD, corner_radius=12)
         add_card.pack(fill="x", pady=(0, 16))
