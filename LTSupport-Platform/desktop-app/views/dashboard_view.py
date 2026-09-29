@@ -32,12 +32,12 @@ class DashboardView(ctk.CTkFrame):
         is_admin = self.app.api.role in (None, "admin")
         is_observer = self.app.api.role != "normal"
 
-        # On the opposite side of the header from the account-action buttons below
-        # (Log Out, Billing, etc.) -- a primary navigation action, not one of those.
-        ctk.CTkButton(header, text="📃 Devices", width=100, height=36, corner_radius=8,
-                      fg_color=theme.CARD, hover_color=theme.CARD_HOVER, text_color=theme.TEXT,
-                      command=app.show_devices).pack(side="left", padx=(20, 0))
-
+        # One consistent nav cluster, all right-aligned, same size/spacing -- a lone
+        # button stranded next to the title (tried earlier) read as a layout mistake,
+        # not an intentional grouping. Packed right-to-left, so this order is what
+        # ends up left-to-right: Devices, View Logs, [Activity, Users, Billing],
+        # Log Out -- Devices still lands furthest from Log Out, just inside the same
+        # aligned row instead of floating on its own.
         ctk.CTkButton(header, text="Log Out", width=100, height=36, corner_radius=8,
                       fg_color=theme.CARD, hover_color=theme.CARD_HOVER, text_color=theme.TEXT,
                       command=app.logout).pack(side="right")
@@ -54,6 +54,9 @@ class DashboardView(ctk.CTkFrame):
         ctk.CTkButton(header, text="🪵 View Logs", width=100, height=36, corner_radius=8,
                       fg_color=theme.CARD, hover_color=theme.CARD_HOVER, text_color=theme.TEXT,
                       command=self._open_logs).pack(side="right", padx=(0, 8))
+        ctk.CTkButton(header, text="📃 Devices", width=100, height=36, corner_radius=8,
+                      fg_color=theme.CARD, hover_color=theme.CARD_HOVER, text_color=theme.TEXT,
+                      command=app.show_devices).pack(side="right", padx=(0, 8))
 
         self.plan_container = ctk.CTkFrame(scroll, fg_color="transparent")
         self.plan_container.pack(fill="x")
