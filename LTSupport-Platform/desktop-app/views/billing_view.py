@@ -112,11 +112,13 @@ class BillingView(ctk.CTkFrame):
                 ("Interview minutes", f"{api.interview_total_minutes_used:.1f}"),
             ])
 
-        if api.ai_questions_asked:
-            self._section_card("AI ASSISTANT USAGE (billed from your balance above)", [
-                ("Questions asked", f"{api.ai_questions_asked}"),
-                ("Total cost", f"${api.ai_cost_cents / 100:,.2f}"),
-            ])
+        # Always shown -- unlike Interview Mode usage above (which only matters once
+        # it's actually been used), this is the only place the org's AI Assistant
+        # subscription status is visible at all, so it can't be conditioned on
+        # ai_questions_asked -- an org that's enabled but hasn't asked a question
+        # yet would otherwise show nothing here and have no way to confirm the
+        # subscription actually took effect.
+        self._render_ai_assistant_card(api)
 
         self._render_payment_history()
 
@@ -186,6 +188,27 @@ class BillingView(ctk.CTkFrame):
             row.pack(fill="x", pady=(10, 0))
             ctk.CTkLabel(row, text=label, font=theme.body(), text_color=theme.TEXT_MUTED).pack(side="left")
             ctk.CTkLabel(row, text=value, font=theme.h3(), text_color=theme.TEXT).pack(side="right")
+
+    def _render_ai_assistant_card(self, api):
+        card = self._card_frame()
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="x", padx=24, pady=20)
+        ctk.CTkLabel(inner, text="🤖 AI ASSISTANT", font=theme.h3(), text_color=theme.TEXT).pack(anchor="w")
+        if api.ai_assistant_enabled:
+            ctk.CTkLabel(inner, text="Enabled for your organization.", font=theme.small(),
+                         text_color=theme.SUCCESS).pack(anchor="w", pady=(4, 12))
+            for i, (label, value) in enumerate([
+                ("Questions asked", f"{api.ai_questions_asked}"),
+                ("Total cost", f"${api.ai_cost_cents / 100:,.2f}"),
+            ]):
+                row = ctk.CTkFrame(inner, fg_color="transparent")
+                row.pack(fill="x", pady=(0 if i == 0 else 10, 0))
+                ctk.CTkLabel(row, text=label, font=theme.body(), text_color=theme.TEXT_MUTED).pack(side="left")
+                ctk.CTkLabel(row, text=value, font=theme.h3(), text_color=theme.TEXT).pack(side="right")
+        else:
+            ctk.CTkLabel(inner, text="Not enabled for your organization -- contact support to add it.",
+                         font=theme.small(), text_color=theme.TEXT_MUTED, wraplength=700,
+                         justify="left").pack(anchor="w", pady=(4, 0))
 
     def _buy_hours_card(self):
         card = self._card_frame()

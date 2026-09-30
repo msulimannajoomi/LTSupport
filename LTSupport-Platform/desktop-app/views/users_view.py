@@ -64,11 +64,12 @@ class UsersView(ctk.CTkFrame):
                      text_color=theme.TEXT_MUTED).pack(side="left")
 
         # The org-level "special subscription" switch (see backend/manage.py's
-        # ai-enable command) -- per-member toggles below only ever matter once this
-        # is on, so it's worth being upfront about when it isn't.
+        # ai-enable command) -- the per-member toggles below can still be set either
+        # way (pre-approving members ahead of time), but won't actually let anyone
+        # use AI Assist until this is on too.
         if not getattr(self.app.api, "ai_assistant_enabled", False):
             ctk.CTkLabel(scroll, text="🤖 AI Assistant isn't enabled for your organization yet -- "
-                                       "contact support to add it.",
+                                       "contact support to add it. You can still pre-approve members below.",
                          font=theme.small(), text_color=theme.TEXT_MUTED).pack(anchor="w", pady=(0, 8))
 
         self.list_container = ctk.CTkFrame(scroll, fg_color="transparent")
@@ -116,15 +117,18 @@ class UsersView(ctk.CTkFrame):
                           font=theme.small(),
                           command=lambda mid=u["member_id"]: self._remove(mid)).pack(side="right")
 
-            # Only shown once the org's own subscription is on (see the note above
-            # the list) -- toggleable either way, so an admin can pre-approve
-            # members before that subscription actually starts.
-            if getattr(self.app.api, "ai_assistant_enabled", False):
-                ai_var = ctk.BooleanVar(value=bool(u.get("ai_allowed")))
-                ctk.CTkSwitch(inner, text="AI Assist", variable=ai_var, onvalue=True, offvalue=False,
-                              progress_color=theme.ACCENT, font=theme.small(), text_color=theme.TEXT_MUTED,
-                              command=lambda mid=u["member_id"], var=ai_var: self._set_ai_allowed(mid, var.get())
-                              ).pack(side="right", padx=(0, 16))
+            # Always shown, and always toggleable, even before the org's own
+            # subscription is on (see the note above the list) -- lets an admin
+            # pre-approve members ahead of that subscription actually starting
+            # (matches backend/app.py's set_user_ai_allowed, which never itself
+            # requires ai_assistant_enabled to accept the change). Hiding this
+            # entirely until the org subscription was on made pre-approval
+            # impossible from the UI at all -- a real bug, not by design.
+            ai_var = ctk.BooleanVar(value=bool(u.get("ai_allowed")))
+            ctk.CTkSwitch(inner, text="AI Assist", variable=ai_var, onvalue=True, offvalue=False,
+                          progress_color=theme.ACCENT, font=theme.small(), text_color=theme.TEXT_MUTED,
+                          command=lambda mid=u["member_id"], var=ai_var: self._set_ai_allowed(mid, var.get())
+                          ).pack(side="right", padx=(0, 16))
 
     def _do_add(self):
         username = self.username_entry.get().strip()
