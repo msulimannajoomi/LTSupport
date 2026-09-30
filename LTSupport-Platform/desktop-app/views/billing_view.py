@@ -206,9 +206,24 @@ class BillingView(ctk.CTkFrame):
                 ctk.CTkLabel(row, text=label, font=theme.body(), text_color=theme.TEXT_MUTED).pack(side="left")
                 ctk.CTkLabel(row, text=value, font=theme.h3(), text_color=theme.TEXT).pack(side="right")
         else:
-            ctk.CTkLabel(inner, text="Not enabled for your organization -- contact support to add it.",
+            ctk.CTkLabel(inner, text="Not enabled for your organization -- request it below and "
+                                      "our team will reach out.",
                          font=theme.small(), text_color=theme.TEXT_MUTED, wraplength=700,
-                         justify="left").pack(anchor="w", pady=(4, 0))
+                         justify="left").pack(anchor="w", pady=(4, 12))
+            ctk.CTkButton(inner, text="Request AI Assistant", height=42, corner_radius=8,
+                          fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
+                          text_color="white", font=theme.h3(), command=self._do_request_ai
+                          ).pack(anchor="w")
+
+    def _do_request_ai(self):
+        # Same interim "email us" flow as _do_buy below, just a different `reason`
+        # so the resulting email (and the page's own copy) is about AI Assistant
+        # instead of a Prepaid upgrade -- see backend/app.py's UPGRADE_REASON_TEXT.
+        api = self.app.api
+        url = (f"{config.PUBLIC_WEB_BASE_URL}/request-upgrade.html"
+               f"?org_id={quote(api.org_id or '')}&org_name={quote(api.org_name or '')}"
+               f"&reason=ai_assistant")
+        webbrowser.open(url)
 
     def _buy_hours_card(self):
         card = self._card_frame()

@@ -29,8 +29,8 @@
 </head>
 <body>
   <div class="card">
-    <h1>Request an Upgrade</h1>
-    <p>Enter your email below and we'll reach out to get your account upgraded to Prepaid.
+    <h1 id="pageTitle">Request an Upgrade</h1>
+    <p id="pageIntro">Enter your email below and we'll reach out to get your account upgraded to Prepaid.
        Requests go straight to our team at sulimanmuhammad68@gmail.com.</p>
     <div class="org" id="orgInfo"></div>
     <label for="email">Your email</label>
@@ -43,8 +43,16 @@
   const params = new URLSearchParams(window.location.search);
   const orgId = params.get("org_id") || "";
   const orgName = params.get("org_name") || "";
+  const reason = params.get("reason") || "prepaid";
   document.getElementById("orgInfo").textContent =
     "Requesting for: " + (orgName || "(unnamed organization)") + " — " + orgId;
+
+  if (reason === "ai_assistant") {
+    document.getElementById("pageTitle").textContent = "Request AI Assistant";
+    document.getElementById("pageIntro").textContent =
+      "Enter your email below and we'll reach out to enable AI Assistant for your organization. " +
+      "Requests go straight to our team at sulimanmuhammad68@gmail.com.";
+  }
 
   function sendRequest() {
     const emailInput = document.getElementById("email");
@@ -64,7 +72,7 @@
     fetch("/api/billing/request-upgrade", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ org_id: orgId, org_name: orgName, customer_email: email }),
+      body: JSON.stringify({ org_id: orgId, org_name: orgName, customer_email: email, reason: reason }),
     })
       .then(async (resp) => {
         if (!resp.ok) {

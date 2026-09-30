@@ -78,10 +78,13 @@ class VerifyPeerPayload(BaseModel):
 
 class UpgradeRequestPayload(BaseModel):
     # See /api/billing/request-upgrade -- the interim stopgap while Stripe's own
-    # account activation is still pending (see config.py's SMTP block).
+    # account activation is still pending (see config.py's SMTP block). Also reused
+    # for the AI Assistant "not enabled yet" button (billing_view.py) -- same email
+    # flow, different reason, see UPGRADE_REASON_TEXT.
     org_id: str
     org_name: str = ""
     customer_email: str
+    reason: str = "prepaid"
 
 
 class MemberLoginPayload(BaseModel):
@@ -457,6 +460,16 @@ def list_payments(authorization: str = Header(default="")):
     return {"payments": db.list_payments_for_org(user["org_id"])}
 
 
+UPGRADE_REASON_TEXT = {
+    "prepaid": "They want to upgrade their account to Prepaid.",
+    "ai_assistant": "They want the AI Assistant subscription enabled for their organization.",
+}
+UPGRADE_REASON_SUBJECT = {
+    "prepaid": "Upgrade request",
+    "ai_assistant": "AI Assistant request",
+}
+
+
 @app.post("/api/billing/request-upgrade")
 def request_upgrade(payload: UpgradeRequestPayload):
     """Interim stopgap for the Buy Hours/Upgrade to Prepaid button while the live
@@ -475,14 +488,15 @@ def request_upgrade(payload: UpgradeRequestPayload):
     if not config.SMTP_USERNAME or not config.SMTP_PASSWORD:
         raise HTTPException(503, "Email isn't configured on the server yet. Please try again later.")
 
+    reason = payload.reason if payload.reason in UPGRADE_REASON_TEXT else "prepaid"
     body = (
         f"Organization: {payload.org_name or '(name not set)'}\n"
         f"Org ID: {payload.org_id}\n"
         f"Contact email provided: {customer_email}\n\n"
-        f"They want to upgrade their account to Prepaid."
+        f"{UPGRADE_REASON_TEXT[reason]}"
     )
     msg = MIMEText(body)
-    msg["Subject"] = f"Upgrade request from {payload.org_name or payload.org_id}"
+    msg["Subject"] = f"{UPGRADE_REASON_SUBJECT[reason]} from {payload.org_name or payload.org_id}"
     msg["From"] = config.SMTP_USERNAME
     msg["To"] = config.UPGRADE_REQUEST_EMAIL
     # So a reply from the inbox this lands in goes straight back to the customer who
