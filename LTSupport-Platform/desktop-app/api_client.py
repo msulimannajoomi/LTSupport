@@ -53,6 +53,15 @@ class ApiClient:
         # backend/db.py's org_members section. None until a real login response
         # populates it, same as the other account fields above.
         self.role = None
+        # AI Assistant (see views/ai_assist_view.py). ai_assistant_available already
+        # folds in every gate (role, trial, org subscription, per-member permission)
+        # -- that's the only one views should actually gate showing the feature on.
+        # ai_assistant_enabled is the raw org-level switch alone, only used by the
+        # Users screen to decide whether per-member toggles are even relevant yet.
+        self.ai_assistant_available = False
+        self.ai_assistant_enabled = False
+        self.ai_questions_asked = 0
+        self.ai_cost_cents = 0
 
     def _headers(self):
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
@@ -142,6 +151,10 @@ class ApiClient:
         self.interview_total_minutes_used = data.get("interview_total_minutes_used", 0)
         self.upgrade_contact_number = data.get("upgrade_contact_number", "")
         self.role = data.get("role", "admin")
+        self.ai_assistant_available = data.get("ai_assistant_available", False)
+        self.ai_assistant_enabled = data.get("ai_assistant_enabled", False)
+        self.ai_questions_asked = data.get("ai_questions_asked", 0)
+        self.ai_cost_cents = data.get("ai_cost_cents", 0)
 
     def logout(self):
         try:
@@ -162,6 +175,10 @@ class ApiClient:
         self.interview_total_minutes_used = 0
         self.upgrade_contact_number = ""
         self.role = None
+        self.ai_assistant_available = False
+        self.ai_assistant_enabled = False
+        self.ai_questions_asked = 0
+        self.ai_cost_cents = 0
 
     def list_devices(self):
         return self._get("/api/devices")["devices"]
@@ -219,6 +236,14 @@ class ApiClient:
     def remove_user(self, member_id):
         return self._delete(f"/api/users/{member_id}")
 
+    def set_user_ai_allowed(self, member_id, allowed):
+        """RBAC, admin-only -- grants or revokes ONE team member's own permission to
+        use the AI Assistant (see views/ai_assist_view.py). Only actually usable by
+        that member once the org's own ai_assistant_enabled subscription is also on
+        (see refresh_account's ai_assistant_enabled) -- toggleable here either way,
+        so an admin can pre-approve members before the org subscription starts."""
+        return self._post(f"/api/users/{member_id}/ai-assist", {"allowed": allowed})
+
     def list_logs(self):
         """RBAC, admin-only -- full session history for this org, most recent first,
         each entry naming which team member (member_username) did the work."""
@@ -244,3 +269,30 @@ class ApiClient:
         if resp.status_code >= 400:
             raise ApiError(_error_detail(resp, "Transcription failed."))
         return resp.json().get("text", "")
+
+    def ai_transcribe(self, wav_bytes):
+        """Same shape as transcribe_audio above, but for the AI Assistant dialog's
+        own mic button (see views/ai_assist_view.py) -- a separate, gated endpoint
+        (OpenAI's Whisper, not Groq's) that does NOT charge on its own; only
+        ai_chat below (the actual answered question) does."""
+        try:
+            resp = requests.post(
+                f"{config.API_BASE_URL}/api/ai/transcribe",
+                headers=self._headers(),
+                files={"audio": ("speech.wav", wav_bytes, "audio/wav")},
+                timeout=20,
+            )
+        except requests.RequestException as e:
+            raise _request_error(e)
+        if resp.status_code >= 400:
+            raise ApiError(_error_detail(resp, "Transcription failed."))
+        return resp.json().get("text", "")
+
+    def ai_chat(self, messages):
+        """Sends the AI Assistant dialog's whole conversation so far (see
+        views/ai_assist_view.py) and returns the AI's reply. `messages` is a list of
+        {"role": "user"|"assistant", "content": str} dicts, oldest first -- the
+        backend charges AI_ASSISTANT_COST_CENTS_PER_QUESTION from the org's prepaid
+        balance for this call (refunded automatically if OpenAI itself fails) --
+        raises ApiError with a specific message if the balance can't cover it."""
+        return self._post("/api/ai/chat", {"messages": messages})["reply"]

@@ -77,6 +77,7 @@ def resolve_session(token: str):
         user["role"] = member["role"]
         user["member_id"] = member["member_id"]
         user["member_username"] = member["username"]
+        user["ai_allowed"] = member.get("ai_allowed", False)
     else:
         user = dict(org)
         user["role"] = "admin"

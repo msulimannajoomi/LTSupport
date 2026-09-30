@@ -10,9 +10,12 @@ def _usage():
     print("  python manage.py topup <org_id> <usd>              (add to a prepaid balance)")
     print("  python manage.py block <org_id>                    (disallow ALL sessions, including interview)")
     print("  python manage.py unblock <org_id>")
+    print("  python manage.py ai-enable <org_id>                (turn on the AI Assistant subscription)")
+    print("  python manage.py ai-disable <org_id>")
     print("Example: python manage.py upgrade ACMECORP-4F2A1B prepaid")
     print("Example: python manage.py topup ACMECORP-4F2A1B 20")
     print("Example: python manage.py block ACMECORP-4F2A1B")
+    print("Example: python manage.py ai-enable ACMECORP-4F2A1B")
 
 
 def main():
@@ -25,6 +28,21 @@ def main():
             return
         db.set_blocked(user["org_id"], cmd == "block")
         print(f"{user['org_id']} ({user['org_name']}) is now {'BLOCKED' if cmd == 'block' else 'unblocked'}.")
+        return
+
+    if len(sys.argv) == 3 and sys.argv[1] in ("ai-enable", "ai-disable"):
+        cmd, org_id = sys.argv[1], sys.argv[2]
+        db.init_db()
+        user = db.get_user_by_org_id(org_id.strip().upper())
+        if not user:
+            print(f"No account found with org id '{org_id}'.")
+            return
+        enabled = cmd == "ai-enable"
+        db.set_org_ai_enabled(user["org_id"], enabled)
+        print(f"AI Assistant is now {'ENABLED' if enabled else 'disabled'} for "
+              f"{user['org_id']} ({user['org_name']}). Note: a Trial account still can't use it "
+              f"regardless (see config.py), and each team member also needs the admin to "
+              f"individually enable it for them from the Users screen.")
         return
 
     if len(sys.argv) != 4:

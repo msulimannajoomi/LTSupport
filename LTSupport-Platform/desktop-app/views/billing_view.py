@@ -112,6 +112,12 @@ class BillingView(ctk.CTkFrame):
                 ("Interview minutes", f"{api.interview_total_minutes_used:.1f}"),
             ])
 
+        if api.ai_questions_asked:
+            self._section_card("AI ASSISTANT USAGE (billed from your balance above)", [
+                ("Questions asked", f"{api.ai_questions_asked}"),
+                ("Total cost", f"${api.ai_cost_cents / 100:,.2f}"),
+            ])
+
         self._render_payment_history()
 
     # ---- small building blocks -------------------------------------------------

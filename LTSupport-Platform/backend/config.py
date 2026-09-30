@@ -103,3 +103,21 @@ SMTP_PORT = 587
 SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 UPGRADE_REQUEST_EMAIL = "sulimanmuhammad68@gmail.com"
+
+# AI Assistant (viewer-side only -- see /api/ai/chat, /api/ai/transcribe, and
+# views/ai_assist_view.py in the desktop app). Server-side only, same reasoning as
+# GROQ_API_KEY above -- never baked into the distributed desktop app.
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_CHAT_MODEL = "gpt-4o-mini"
+OPENAI_TRANSCRIBE_MODEL = "whisper-1"
+# Flat cost per question (transcription + chat reply together count as ONE
+# question) -- deducted from the org's existing prepaid balance_cents, same pool
+# as session time. Simple and predictable rather than passing through OpenAI's own
+# per-token cost, which would vary question to question for no reason a customer
+# could predict up front.
+AI_ASSISTANT_COST_CENTS_PER_QUESTION = 10
+# Gates the whole feature per-org, on top of the per-question cost above -- flipped
+# manually (see manage.py's ai-enable/ai-disable commands), the same "manual flag"
+# approach the interim upgrade-by-email billing flow already uses, not a
+# self-service Stripe subscription (yet). Never available on a trial account
+# regardless of this flag -- see app.py's _require_ai_assistant.

@@ -126,6 +126,12 @@ def create_user(org_id, org_name, email, phone, password_hash, account_type="tri
         "blocked": 0,
         "interview_session_count": 0,
         "interview_total_minutes_used": 0.0,
+        # AI Assistant (see config.py) -- off by default for every org. Flipped
+        # manually per-org (see set_org_ai_enabled/manage.py's ai-enable command),
+        # not something an org can self-serve on yet.
+        "ai_assistant_enabled": False,
+        "ai_questions_asked": 0,
+        "ai_cost_cents": 0,
         "created_at": now_iso(),
     })
     return org_id
@@ -155,6 +161,30 @@ def set_blocked(org_id, blocked):
     _get_db().users.update_one({"_id": org_id}, {"$set": {"blocked": 1 if blocked else 0}})
 
 
+def set_org_ai_enabled(org_id, enabled):
+    """The per-org "special subscription" gate for the AI Assistant (see config.py) --
+    manual for now (see manage.py's ai-enable/ai-disable commands), not self-service.
+    Never enough on its own: a trial account is still refused regardless (see app.py's
+    _require_ai_assistant), and a "normal"-role member also needs their own
+    ai_allowed flag (see set_org_member_ai_allowed) even once this is on."""
+    _get_db().users.update_one({"_id": org_id}, {"$set": {"ai_assistant_enabled": bool(enabled)}})
+
+
+def record_ai_usage(org_id, cost_cents):
+    """Charges one AI Assistant question (transcription + chat reply together count
+    as one) against the org's existing prepaid balance -- same pool as session time,
+    not a separate wallet. Conditioned on the update itself (balance_cents >= cost)
+    so a burst of concurrent questions can't ever push the balance negative via a
+    read-then-write race. Returns True if it was actually charged, False if the
+    balance couldn't cover it (caller must refuse the question, not answer for
+    free)."""
+    result = _get_db().users.update_one(
+        {"_id": org_id, "balance_cents": {"$gte": cost_cents}},
+        {"$inc": {"balance_cents": -cost_cents, "ai_questions_asked": 1, "ai_cost_cents": cost_cents}},
+    )
+    return result.modified_count > 0
+
+
 def record_interview_usage(org_id, minutes_used):
     """Interview-mode sessions are never balance-restricted and never touch
     balance_cents -- tracked in entirely separate counters from normal/billable
@@ -162,6 +192,17 @@ def record_interview_usage(org_id, minutes_used):
     _get_db().users.update_one(
         {"_id": org_id},
         {"$inc": {"interview_session_count": 1, "interview_total_minutes_used": minutes_used}},
+    )
+
+
+def refund_ai_usage(org_id, cost_cents):
+    """Undoes record_ai_usage when a charged question then fails to actually get
+    answered (the OpenAI call itself errors out) -- reverses all three fields it
+    touched, not just the balance, so ai_questions_asked/ai_cost_cents keep meaning
+    "questions actually answered" rather than "questions attempted"."""
+    _get_db().users.update_one(
+        {"_id": org_id},
+        {"$inc": {"balance_cents": cost_cents, "ai_questions_asked": -1, "ai_cost_cents": -cost_cents}},
     )
 
 
@@ -316,6 +357,11 @@ def create_org_member(org_id, username, password_hash, role):
         "password_hash": password_hash,
         "role": role,
         "active": True,
+        # Per-member AI Assistant permission -- off by default, even once the org's
+        # own ai_assistant_enabled is on (see set_org_ai_enabled). An admin opts
+        # individual team members in one at a time (see set_org_member_ai_allowed),
+        # not everyone in the org at once.
+        "ai_allowed": False,
         "created_at": now_iso(),
     })
     return member_id
@@ -339,6 +385,14 @@ def delete_org_member(member_id, org_id):
     org, never guess another org's member_id and remove it."""
     result = _get_db().org_members.delete_one({"_id": member_id, "org_id": org_id})
     return result.deleted_count > 0
+
+
+def set_org_member_ai_allowed(member_id, org_id, allowed):
+    """Scoped to org_id too, same reasoning as delete_org_member -- an admin can only
+    ever grant/revoke this for a member of their OWN org."""
+    result = _get_db().org_members.update_one(
+        {"_id": member_id, "org_id": org_id}, {"$set": {"ai_allowed": bool(allowed)}})
+    return result.matched_count > 0
 
 
 # ---- Sessions ----

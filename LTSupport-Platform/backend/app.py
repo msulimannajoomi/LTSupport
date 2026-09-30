@@ -100,6 +100,23 @@ class CreateMemberPayload(BaseModel):
     # you assign to a specific member.
 
 
+class SetMemberAiPayload(BaseModel):
+    allowed: bool
+
+
+class AiChatMessage(BaseModel):
+    role: str  # "user" or "assistant" -- never "system", the caller doesn't set that
+    content: str
+
+
+class AiChatPayload(BaseModel):
+    # The whole conversation so far (see views/ai_assist_view.py), not just the
+    # latest message -- OpenAI's Chat Completions API is stateless per call, so the
+    # full running history has to be resent every time for the AI to have any
+    # memory of earlier turns in the same dialog.
+    messages: list[AiChatMessage]
+
+
 def _account_view(user, token=None):
     view = {
         "org_id": user["org_id"],
@@ -123,6 +140,29 @@ def _account_view(user, token=None):
         # carries (see auth.resolve_session) -- every pre-existing field above is
         # completely unaffected by which one this is.
         "role": user.get("role", "admin"),
+        "ai_questions_asked": user.get("ai_questions_asked", 0),
+        "ai_cost_cents": user.get("ai_cost_cents", 0),
+        # The raw org-level "special subscription" switch (see manage.py's
+        # ai-enable/ai-disable) -- distinct from ai_assistant_available below, which
+        # also folds in role/trial/per-member checks that don't apply to what an
+        # admin needs to know here: whether to even show per-member AI Assist
+        # toggles on the Users screen at all.
+        "ai_assistant_enabled": bool(user.get("ai_assistant_enabled")),
+        # Computed here, not on the client, same reasoning as hours_remaining above --
+        # every gate the AI Assistant needs folded into one flag: the org's own
+        # manual "special subscription" switch (ai_assistant_enabled), never on
+        # trial regardless of that switch, and -- since only a "normal"-role member
+        # ever actually hosts/joins with control to begin with (an observer can't
+        # send anything to the host at all, see relay.py's _handle_observer, so
+        # drafting text to paste into the overlay would be useless for one) -- only
+        # ever available to that role, and only once an admin has individually
+        # opted them in (ai_allowed).
+        "ai_assistant_available": (
+            user.get("role") == "normal"
+            and user.get("account_type") != "trial"
+            and bool(user.get("ai_assistant_enabled"))
+            and bool(user.get("ai_allowed"))
+        ),
     }
     if token:
         view["token"] = token
@@ -140,6 +180,22 @@ def _auth_user(authorization: str = Header(default="")):
 def _require_admin(user):
     if user.get("role", "admin") != "admin":
         raise HTTPException(403, "Only an account admin can do this.")
+
+
+def _require_ai_assistant(user):
+    """Every gate the AI Assistant needs, re-checked server-side on every single
+    question -- _account_view's ai_assistant_available is only ever a client-side
+    hint for whether to show the button at all; a stale/cached copy of that (an
+    admin just revoked it, a trial account, org subscription lapsed) must never be
+    what actually decides whether a question gets answered and billed."""
+    if user.get("role") != "normal":
+        raise HTTPException(403, "AI Assistant is only available to team members.")
+    if user.get("account_type") == "trial":
+        raise HTTPException(403, "AI Assistant is not available on a Trial account.")
+    if not user.get("ai_assistant_enabled"):
+        raise HTTPException(403, "AI Assistant is not enabled for this organization.")
+    if not user.get("ai_allowed"):
+        raise HTTPException(403, "Ask your organization admin to enable AI Assistant for your account.")
 
 
 
@@ -238,7 +294,8 @@ def list_users(authorization: str = Header(default="")):
     user = _auth_user(authorization)
     _require_admin(user)
     members = db.list_org_members(user["org_id"])
-    return {"users": [{"member_id": m["member_id"], "username": m["username"], "role": m["role"]}
+    return {"users": [{"member_id": m["member_id"], "username": m["username"], "role": m["role"],
+                        "ai_allowed": bool(m.get("ai_allowed", False))}
                        for m in members]}
 
 
@@ -265,6 +322,19 @@ def remove_user(member_id: str, authorization: str = Header(default="")):
     user = _auth_user(authorization)
     _require_admin(user)
     if not db.delete_org_member(member_id, user["org_id"]):
+        raise HTTPException(404, "No such user on your account.")
+    return {"ok": True}
+
+
+@app.post("/api/users/{member_id}/ai-assist")
+def set_user_ai_allowed(member_id: str, payload: SetMemberAiPayload, authorization: str = Header(default="")):
+    """Admin-only, and only meaningful at all once this org's own AI Assistant
+    subscription is on (see _require_ai_assistant) -- toggleable either way
+    regardless, so an admin can pre-approve a member before the org subscription
+    itself is even active."""
+    user = _auth_user(authorization)
+    _require_admin(user)
+    if not db.set_org_member_ai_allowed(member_id, user["org_id"], payload.allowed):
         raise HTTPException(404, "No such user on your account.")
     return {"ok": True}
 
@@ -540,6 +610,76 @@ def speech_transcribe(audio: UploadFile = File(...), authorization: str = Header
     if resp.status_code >= 400:
         raise HTTPException(502, "Speech-to-text request failed. Please try again.")
     return {"text": resp.json().get("text", "").strip()}
+
+
+AI_SYSTEM_PROMPT = (
+    "You are an AI assistant helping a remote-support technician while they're live "
+    "on a support session. They may copy your reply and paste it into an on-screen "
+    "message shown to the person they're helping, so keep answers short, clear, and "
+    "ready to send as-is -- plain text, no markdown formatting."
+)
+
+
+@app.post("/api/ai/transcribe")
+def ai_transcribe(audio: UploadFile = File(...), authorization: str = Header(default="")):
+    """Transcribes a short voice recording for the AI Assistant dialog (see
+    views/ai_assist_view.py) -- a separate endpoint from /api/speech/transcribe
+    (Groq, used by the overlay's own mic button) since this one is gated by
+    _require_ai_assistant and deliberately does NOT charge anything on its own;
+    only /api/ai/chat (the actual answered question) does -- see its own
+    docstring for why."""
+    user = _auth_user(authorization)
+    _require_ai_assistant(user)
+    audio_bytes = audio.file.read()
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}"},
+            files={"file": (audio.filename or "speech.wav", audio_bytes, audio.content_type or "audio/wav")},
+            data={"model": config.OPENAI_TRANSCRIBE_MODEL, "language": "en", "response_format": "json"},
+            timeout=20,
+        )
+    except requests.RequestException:
+        raise HTTPException(503, "Could not reach the speech-to-text service. Please try again.")
+    if resp.status_code >= 400:
+        raise HTTPException(502, "Speech-to-text request failed. Please try again.")
+    return {"text": resp.json().get("text", "").strip()}
+
+
+@app.post("/api/ai/chat")
+def ai_chat(payload: AiChatPayload, authorization: str = Header(default="")):
+    """The AI Assistant's actual answered question -- transcription (above) and this
+    reply together count as ONE question for billing purposes, charged here (not
+    there) since a transcription with no follow-up question was never actually
+    "answered by AI" at all. Charges AI_ASSISTANT_COST_CENTS_PER_QUESTION from the
+    org's existing prepaid balance -- same pool as session time -- BEFORE calling
+    OpenAI, so a request that can't be billed never runs up real OpenAI cost for
+    nothing; refunded back if the OpenAI call itself then fails."""
+    user = _auth_user(authorization)
+    _require_ai_assistant(user)
+    if not payload.messages:
+        raise HTTPException(400, "No question to answer.")
+
+    cost = config.AI_ASSISTANT_COST_CENTS_PER_QUESTION
+    if not db.record_ai_usage(user["org_id"], cost):
+        raise HTTPException(402, "Your balance is too low for another AI Assistant question.")
+
+    messages = [{"role": "system", "content": AI_SYSTEM_PROMPT}]
+    messages += [{"role": m.role, "content": m.content} for m in payload.messages]
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}"},
+            json={"model": config.OPENAI_CHAT_MODEL, "messages": messages, "temperature": 0.4},
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            raise requests.RequestException(f"OpenAI returned {resp.status_code}")
+        reply = resp.json()["choices"][0]["message"]["content"].strip()
+    except (requests.RequestException, KeyError, IndexError):
+        db.refund_ai_usage(user["org_id"], cost)  # the question was never actually answered
+        raise HTTPException(503, "AI Assistant could not answer right now. Please try again.")
+    return {"reply": reply, "cost_cents": cost}
 
 
 @app.post("/api/session/report")

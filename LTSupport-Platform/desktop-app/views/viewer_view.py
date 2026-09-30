@@ -12,6 +12,7 @@ import dialogs
 from viewer_agent import ViewerAgent
 from recorder import SessionRecorder
 from overlay import REFERENCE_SCREEN_WIDTH
+from views.ai_assist_dialog import AiAssistDialog
 
 
 class ViewerView:
@@ -66,6 +67,10 @@ class ViewerView:
         self._speech_stream = None
         self._speech_frames = []
         self._speech_stop_timer = None
+
+        # At most one AI Assistant dialog per Viewer window -- reopened/refocused
+        # rather than duplicated (see toggle_ai_assist).
+        self._ai_assist_dialog = None
         # Whisper (via Groq) returns a transcript with no line breaks at all, however
         # long the spoken note runs -- landing it in the overlay as one continuous
         # line. Wrapped to this many words per line instead (see _wrap_transcript),
@@ -204,6 +209,15 @@ class ViewerView:
                           fg_color=theme.BG, hover_color=theme.CARD_HOVER, text_color=theme.TEXT,
                           command=self.toggle_settings).pack(side="left")
 
+            # Gated by ai_assistant_available, which already folds in every check
+            # that matters (role, trial, org subscription, per-member permission --
+            # see backend/app.py's _account_view) -- nothing else needed here beyond
+            # showing or hiding the button itself.
+            if getattr(self.app.api, "ai_assistant_available", False):
+                ctk.CTkButton(text_inner, text="🤖 AI Assist", width=110, height=36, corner_radius=8,
+                              fg_color=theme.BG, hover_color=theme.CARD_HOVER, text_color=theme.TEXT,
+                              command=self.open_ai_assist).pack(side="left", padx=(6, 0))
+
             self.settings_panel = ctk.CTkFrame(self.top, fg_color=theme.CARD, corner_radius=0)
             self._build_settings_panel()
 
@@ -329,6 +343,16 @@ class ViewerView:
             self.settings_panel.pack_forget()
         else:
             self.settings_panel.pack(side="top", fill="x", before=self.canvas)
+
+    def open_ai_assist(self):
+        # Reused/refocused rather than opening a second one -- winfo_exists guards
+        # against a stale reference to an already-closed dialog (e.g. the person
+        # closed it with its own window controls, not through this button).
+        if self._ai_assist_dialog is not None and self._ai_assist_dialog.top.winfo_exists():
+            self._ai_assist_dialog.top.deiconify()
+            self._ai_assist_dialog.top.lift()
+            return
+        self._ai_assist_dialog = AiAssistDialog(self.top, self.app.api)
 
     def on_status(self, status, info):
         self.top.after(0, lambda: self._apply_status(status, info))
@@ -852,6 +876,11 @@ class ViewerView:
             try:
                 self._speech_stream.stop()
                 self._speech_stream.close()
+            except Exception:
+                pass
+        if self._ai_assist_dialog is not None:
+            try:
+                self._ai_assist_dialog.close()
             except Exception:
                 pass
         if self.control_mode:
