@@ -111,9 +111,7 @@ class ViewerAgent:
                 self.limit_seconds = limit_seconds
                 self.device_name = device_name or self.device_id
             else:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(15)  # matches the relay's own HELLO_TIMEOUT
-                sock.connect((config.RELAY_HOST, config.RELAY_PORT))
+                sock = proto.connect_relay_socket(15)  # matches the relay's own HELLO_TIMEOUT
                 proto.send_frame(sock, proto.TYPE_VIEWER_HELLO, {
                     "session_token": self.session_token,
                     "device_id": self.device_id,

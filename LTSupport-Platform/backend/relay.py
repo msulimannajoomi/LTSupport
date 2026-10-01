@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import secrets
+import ssl
 import struct
 import time
 
@@ -601,8 +602,21 @@ async def _handle_viewer(reader, writer, user, data):
         pass
 
 
+def _build_tls_context():
+    """None (plaintext, the previous/default behavior) unless both TLS_CERT_FILE and
+    TLS_KEY_FILE are actually configured -- asyncio applies TLS transparently at the
+    transport layer, so nothing in handle_connection or protocol.py (both already
+    just read/write a StreamReader/StreamWriter) needed to change for this."""
+    if not (config.TLS_CERT_FILE and config.TLS_KEY_FILE):
+        return None
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile=config.TLS_CERT_FILE, keyfile=config.TLS_KEY_FILE)
+    return context
+
+
 async def start_server(host, port):
-    server = await asyncio.start_server(handle_connection, host, port)
-    print(f"[Relay] Listening on {host}:{port}")
+    tls_context = _build_tls_context()
+    server = await asyncio.start_server(handle_connection, host, port, ssl=tls_context)
+    print(f"[Relay] Listening on {host}:{port} ({'TLS' if tls_context else 'plaintext'})")
     async with server:
         await server.serve_forever()

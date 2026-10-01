@@ -143,7 +143,21 @@ class LocalHostServer:
                     conn.close()
                     continue
 
-                if not self.verify_peer(hello.get("session_token", "")):
+                # True / False / None -- see host_agent.py's _verify_peer for why
+                # these can't be collapsed into a plain bool: None means the check
+                # itself failed (network blip, backend briefly unreachable), which
+                # is a completely different situation from the backend actually
+                # having confirmed these are two different accounts, and showing
+                # the same message for both was misleading whenever it was really
+                # just a connectivity hiccup.
+                verified = self.verify_peer(hello.get("session_token", ""))
+                if verified is None:
+                    _send_json_line(conn, {"magic": MAGIC, "ok": False,
+                                            "message": "Could not verify your account right now -- check "
+                                                       "your connection and try again."})
+                    conn.close()
+                    continue
+                if not verified:
                     _send_json_line(conn, {"magic": MAGIC, "ok": False,
                                             "message": "This device belongs to a different account."})
                     conn.close()

@@ -195,6 +195,12 @@ class ViewerView:
                                               font=theme.body(), fg_color=theme.BG, text_color=theme.TEXT)
             self.text_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
             self.text_entry.bind("<KeyRelease>", lambda e: self.send_text())
+            # Pasted text (e.g. copied from the AI Assistant dialog) has no line
+            # breaks of its own, same problem _wrap_transcript already solves for
+            # speech-to-text -- without this, a long pasted reply landed as one
+            # continuous line here (and on the host's screen, since the host only
+            # ever breaks at a real newline, never re-flows by width).
+            self.text_entry.bind("<<Paste>>", self._on_paste)
 
             self.speech_btn = ctk.CTkButton(text_inner, text="🎙 Speak", width=90, height=36, corner_radius=8,
                                              fg_color=theme.BG, hover_color=theme.CARD_HOVER, text_color=theme.TEXT,
@@ -235,6 +241,7 @@ class ViewerView:
             self.canvas.bind("<Motion>", self.on_mouse_move)
             self.canvas.bind("<Button>", self.on_mouse_click)
             self.canvas.bind("<ButtonRelease>", self.on_mouse_release)
+            self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
             # Bound to the canvas specifically, not the whole window -- otherwise
             # every keystroke typed anywhere in this window, including into
             # text_entry above (meant only to compose the local overlay message),
@@ -302,7 +309,7 @@ class ViewerView:
 
         pad_speech = ctk.CTkFrame(self.settings_panel, fg_color="transparent")
         pad_speech.pack(padx=20, pady=(0, 16), fill="x")
-        ctk.CTkLabel(pad_speech, text="WORDS/LINE (speech-to-text)", font=theme.small(),
+        ctk.CTkLabel(pad_speech, text="WORDS/LINE (speech-to-text & paste)", font=theme.small(),
                      text_color=theme.TEXT_MUTED).pack(side="left")
         self.words_per_line_entry = ctk.CTkEntry(pad_speech, width=50, height=26)
         self.words_per_line_entry.insert(0, str(self._words_per_line))
@@ -654,6 +661,22 @@ class ViewerView:
             btn = {1: "left", 2: "middle", 3: "right"}.get(event.num, "left")
             self.agent.send_input({"type": "mouse_click", "button": btn, "pressed": False})
 
+    def on_mouse_wheel(self, event):
+        # Only in Control Mode -- same gating as every other real input below,
+        # consistent with on_mouse_click/on_mouse_move not touching the host at
+        # all in Pointer Mode. This was never wired up at all before (not
+        # broken, just never built): two-finger trackpad scroll and a mouse
+        # wheel both deliver the same Windows <MouseWheel> event, so this one
+        # binding covers both.
+        if not self.control_mode:
+            return
+        # event.delta is +-120 per notch on Windows, positive when scrolling up
+        # (away from the user) -- dividing down to +-1 (or more, for a fast
+        # scroll) "clicks" matches what pynput's Controller.scroll(dx, dy)
+        # expects on the host side, with the same sign convention (positive dy
+        # = scroll up), so this needs no inversion.
+        self.agent.send_input({"type": "mouse_scroll", "dx": 0, "dy": int(event.delta / 120)})
+
     def on_key_press(self, event):
         if self.control_mode:
             self.agent.send_input({"type": "key_press", "key": event.keysym})
@@ -685,6 +708,15 @@ class ViewerView:
     def clear_text(self):
         self.text_entry.delete("1.0", "end")
         self.send_text()
+
+    def _on_paste(self, event):
+        try:
+            clip = self.text_entry.clipboard_get()
+        except Exception:
+            return None  # nothing on the clipboard to wrap -- let the default paste (a no-op) happen
+        self.text_entry.insert("insert", self._wrap_transcript(clip))
+        self.send_text()
+        return "break"  # suppress the default paste, which would insert `clip` unwrapped
 
     def toggle_speech_input(self):
         if self.speech_recording:
@@ -759,7 +791,10 @@ class ViewerView:
             text = self.app.api.transcribe_audio(wav_bytes)
             self.top.after(0, lambda: self._on_transcribed(text, None))
         except Exception as e:
-            self.top.after(0, lambda: self._on_transcribed(None, str(e)))
+            # See login_view.py's _do_login for why this can't read `e` directly
+            # inside the lambda -- it's deleted by the time .after() runs it.
+            message = str(e)
+            self.top.after(0, lambda: self._on_transcribed(None, message))
 
     def _on_transcribed(self, text, error):
         # Reached via self.top.after() from a background thread -- close() can destroy
@@ -786,16 +821,28 @@ class ViewerView:
     def _wrap_transcript(self, text):
         """Whisper returns a transcript with no line breaks at all, however long the
         spoken note runs -- inserted as-is, that's one continuous line in the overlay
-        no matter how much was said. Break it every self._words_per_line words instead
+        no matter how much was said. The same applies to anything pasted in from
+        elsewhere (e.g. copied out of the AI Assistant dialog) -- also run through
+        here (see _on_paste). Break it every self._words_per_line words instead
         (client-configurable in the Style panel) -- simple word-count wrapping rather
         than measuring rendered width, since the overlay's actual on-screen width
-        varies with font size/zoom and isn't something this side can measure exactly."""
-        words = text.split()
-        if self._words_per_line <= 0 or len(words) <= self._words_per_line:
+        varies with font size/zoom and isn't something this side can measure exactly.
+        Wrapped per existing paragraph (split on "\\n") rather than as one single
+        blob -- a speech transcript never has its own newlines so this is a no-op
+        for that case, but pasted text sometimes does, and collapsing those would
+        destroy structure the person pasting it clearly intended."""
+        if self._words_per_line <= 0:
             return text
-        lines = [" ".join(words[i:i + self._words_per_line])
-                 for i in range(0, len(words), self._words_per_line)]
-        return "\n".join(lines)
+        paragraphs = []
+        for paragraph in text.split("\n"):
+            words = paragraph.split()
+            if len(words) <= self._words_per_line:
+                paragraphs.append(paragraph)
+                continue
+            lines = [" ".join(words[i:i + self._words_per_line])
+                     for i in range(0, len(words), self._words_per_line)]
+            paragraphs.append("\n".join(lines))
+        return "\n".join(paragraphs)
 
     def send_style(self, fg=None, size=None, family=None, bold=None, opacity=None):
         data = {"type": "overlay_style"}

@@ -5,6 +5,14 @@ API_PORT = int(os.environ.get("LTSUPPORT_API_PORT", 8000))
 
 RELAY_HOST = "0.0.0.0"
 RELAY_PORT = int(os.environ.get("LTSUPPORT_RELAY_PORT", 7000))
+# The relay is a raw TCP socket, not HTTP -- Caddy (which already terminates TLS for
+# the REST API via its reverse_proxy) can't front this the same way, so the relay
+# terminates TLS itself instead, directly reusing the same publicly-trusted
+# Let's Encrypt cert/key Caddy already obtained for this domain (copied in at deploy
+# time -- see relay.py's start_server). Unset (the default) means the relay listens
+# in plaintext, same as before -- only set once the cert/key are actually present.
+TLS_CERT_FILE = os.environ.get("LTSUPPORT_TLS_CERT_FILE", "")
+TLS_KEY_FILE = os.environ.get("LTSUPPORT_TLS_KEY_FILE", "")
 
 # MongoDB Atlas connection. Must come from the environment -- there is deliberately no
 # hardcoded fallback here (there used to be one, a real working credential, which is
@@ -105,17 +113,40 @@ SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 UPGRADE_REQUEST_EMAIL = "sulimanmuhammad68@gmail.com"
 
 # AI Assistant (viewer-side only -- see /api/ai/chat, /api/ai/transcribe, and
-# views/ai_assist_view.py in the desktop app). Server-side only, same reasoning as
-# GROQ_API_KEY above -- never baked into the distributed desktop app.
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_CHAT_MODEL = "gpt-4o-mini"
-OPENAI_TRANSCRIBE_MODEL = "whisper-1"
+# views/ai_assist_view.py in the desktop app). Runs on Groq (same account/key as
+# GROQ_API_KEY/GROQ_WHISPER_MODEL above, already used for the overlay's own
+# speech-to-text) rather than OpenAI directly -- OpenAI's API has no free tier at
+# all once an account's trial credits run out, charging real money per call on
+# every model regardless; Groq's free tier covers this feature's actual volume at
+# no cost, via OpenAI-compatible endpoints so the request/response shape below
+# barely differs from calling OpenAI directly would have.
+GROQ_CHAT_MODEL = "openai/gpt-oss-20b"
+# Only for a question that includes a pasted screenshot -- Groq's chat models here
+# have no vision input at all. A separate free-tier account/key from Groq's, used
+# only for that case (see app.py's _gemini_chat), so plain text keeps using the
+# faster, already-proven Groq path instead of competing for Gemini's own
+# separately rate-limited free quota.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# Not the flagship "gemini-3.8-flash" -- its free tier turned out to cap out at
+# 20 requests per DAY total (confirmed directly: a handful of test calls exhausted
+# it instantly), unusable for a real feature. The "flash-lite" line gets a far
+# higher free quota (confirmed: several calls back to back with no issue) and
+# still reads images correctly -- just a smaller/cheaper model, not a different
+# capability tier.
+GEMINI_VISION_MODEL = "gemini-3.5-flash-lite"
 # Flat cost per question (transcription + chat reply together count as ONE
 # question) -- deducted from the org's existing prepaid balance_cents, same pool
-# as session time. Simple and predictable rather than passing through OpenAI's own
-# per-token cost, which would vary question to question for no reason a customer
-# could predict up front.
-AI_ASSISTANT_COST_CENTS_PER_QUESTION = 10
+# as session time. This is what the ORG is billed for the feature, independent of
+# whatever the underlying AI provider actually costs (currently nothing, on
+# Groq's free tier) -- simple and predictable rather than passing through a
+# per-token provider cost that would vary question to question for no reason a
+# customer could predict up front.
+AI_ASSISTANT_COST_CENTS_PER_QUESTION = 5
+# A question that includes a pasted screenshot costs more -- routed to Gemini
+# instead of Groq (see app.py's ai_chat), which actually has a per-token cost
+# once past its own free tier, and vision tokens are heavier than text ones
+# regardless of provider. Still flat or predictable, same reasoning as above.
+AI_ASSISTANT_IMAGE_COST_CENTS_PER_QUESTION = 15
 # Gates the whole feature per-org, on top of the per-question cost above -- flipped
 # manually (see manage.py's ai-enable/ai-disable commands), the same "manual flag"
 # approach the interim upgrade-by-email billing flow already uses, not a

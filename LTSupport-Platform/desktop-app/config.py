@@ -1,7 +1,16 @@
 # Point these at your deployed server's public IP/domain before distributing to clients.
-API_BASE_URL = "http://136.116.38.224:8000"
+# HTTPS now, through the same Caddy reverse proxy already fronting the static pages
+# below -- real TLS for login/billing/AI Assistant traffic, with zero server-side
+# risk since Caddy's already been reliably proxying this exact path all along.
+API_BASE_URL = "https://testingpaddletl.najoomi.ai"
+# Still plaintext, deliberately -- the relay (unlike the API above) isn't behind
+# Caddy, and flipping it to TLS-only breaks every already-installed client's
+# remote sessions the instant the server switches over, with no way to warn them
+# first. Flip RELAY_HOST to a real hostname (a bare IP never matches a TLS cert)
+# and RELAY_USE_TLS to True together, only once that's coordinated.
 RELAY_HOST = "136.116.38.224"
 RELAY_PORT = 7000
+RELAY_USE_TLS = False
 
 # The public, Caddy-fronted HTTPS domain -- NOT the same as API_BASE_URL above, which
 # points directly at the backend's own port and has no static file serving of its

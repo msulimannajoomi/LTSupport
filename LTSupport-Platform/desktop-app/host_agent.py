@@ -323,10 +323,17 @@ class HostAgent:
         self.local_server.start()
 
     def _verify_peer(self, peer_token):
+        # None (not False) on failure -- a network error, a timeout, the backend
+        # being briefly unreachable, etc. is NOT the same thing as the backend
+        # actually having checked and found a different account, but collapsing
+        # both into False showed the exact same "this device belongs to a
+        # different account" message either way -- actively misleading on a
+        # connection hiccup between two devices that really are on the same
+        # account. See local_link.py's handling of this three-way result.
         try:
             return self.api.verify_peer(peer_token)
         except Exception:
-            return False
+            return None
 
     def _check_session(self, session_type):
         try:
@@ -462,17 +469,15 @@ class HostAgent:
         mid-retry failure doesn't flash an error the user can't do anything about."""
         org_id = self.api.org_id if self.api else None
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # Stays in effect through the whole handshake below, not just connect() --
-            # cleared only after HELLO_OK actually arrives. Previously this was cleared
-            # right after connect(), leaving the handshake with NO timeout at all: if the
-            # relay was ever slow to respond, this could hang indefinitely with nothing
-            # shown to the user -- and since this runs on a background thread, a timeout
-            # exception here (if one had been set) would otherwise silently kill the
-            # thread with no error surfaced at all. Wrapping the whole thing in one try
-            # fixes both.
-            sock.settimeout(15)  # matches the relay's own HELLO_TIMEOUT
-            sock.connect((config.RELAY_HOST, config.RELAY_PORT))
+            # The 15s timeout stays in effect through the whole handshake below, not
+            # just connecting -- cleared only after HELLO_OK actually arrives.
+            # Previously this was cleared right after connecting, leaving the
+            # handshake with NO timeout at all: if the relay was ever slow to
+            # respond, this could hang indefinitely with nothing shown to the user --
+            # and since this runs on a background thread, a timeout exception here
+            # (if one had been set) would otherwise silently kill the thread with no
+            # error surfaced at all. Wrapping the whole thing in one try fixes both.
+            sock = proto.connect_relay_socket(15)
 
             # Once we already have a device_id (either from a prior run, or assigned by
             # the relay earlier this run), reuse it so a reconnect keeps the same id
@@ -923,6 +928,8 @@ class HostAgent:
                 self.mouse.press(btn)
             else:
                 self.mouse.release(btn)
+        elif cmd_type == "mouse_scroll":
+            self.mouse.scroll(data.get("dx", 0), data.get("dy", 0))
         elif cmd_type in ("key_press", "key_release"):
             k_name = KEY_MAPPING.get(data["key"], data["key"])
             k = getattr(Key, k_name) if hasattr(Key, k_name) else k_name

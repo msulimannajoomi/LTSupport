@@ -62,6 +62,8 @@ class ApiClient:
         self.ai_assistant_enabled = False
         self.ai_questions_asked = 0
         self.ai_cost_cents = 0
+        self.ai_cost_per_question_cents = 0
+        self.ai_image_cost_per_question_cents = 0
 
     def _headers(self):
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
@@ -155,6 +157,8 @@ class ApiClient:
         self.ai_assistant_enabled = data.get("ai_assistant_enabled", False)
         self.ai_questions_asked = data.get("ai_questions_asked", 0)
         self.ai_cost_cents = data.get("ai_cost_cents", 0)
+        self.ai_cost_per_question_cents = data.get("ai_cost_per_question_cents", 0)
+        self.ai_image_cost_per_question_cents = data.get("ai_image_cost_per_question_cents", 0)
 
     def logout(self):
         try:
@@ -179,6 +183,8 @@ class ApiClient:
         self.ai_assistant_enabled = False
         self.ai_questions_asked = 0
         self.ai_cost_cents = 0
+        self.ai_cost_per_question_cents = 0
+        self.ai_image_cost_per_question_cents = 0
 
     def list_devices(self):
         return self._get("/api/devices")["devices"]
@@ -248,6 +254,11 @@ class ApiClient:
         """RBAC, admin-only -- full session history for this org, most recent first,
         each entry naming which team member (member_username) did the work."""
         return self._get("/api/logs")["logs"]
+
+    def list_ai_chat_logs(self):
+        """RBAC, admin-only -- every AI Assistant question/answer pair this org's team
+        has actually been charged for, most recent first (see db.log_ai_chat)."""
+        return self._get("/api/ai/chat-logs")["logs"]
 
     def transcribe_audio(self, wav_bytes):
         """Sends a short recorded voice clip (WAV bytes) to the backend's speech-to-text

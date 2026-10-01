@@ -43,6 +43,19 @@ class ActivityLogsView(ctk.CTkFrame):
         ctk.CTkLabel(self.list_container, text="Loading…", font=theme.body(),
                      text_color=theme.TEXT_MUTED).pack(pady=20)
 
+        # A second, separate section on the same scrollable page rather than its own
+        # tab -- same "admin sees what the team actually did" purpose as the session
+        # list above, just for AI Assistant questions instead of remote-support work.
+        ctk.CTkLabel(scroll, text="🤖 AI Assistant Conversations", font=theme.h2(),
+                     text_color=theme.TEXT).pack(anchor="w", pady=(32, 4))
+        ctk.CTkLabel(scroll, text="Every question a team member has asked the AI Assistant, "
+                                   "most recent first.", font=theme.body(),
+                     text_color=theme.TEXT_MUTED).pack(anchor="w", pady=(0, 16))
+        self.ai_list_container = ctk.CTkFrame(scroll, fg_color="transparent")
+        self.ai_list_container.pack(fill="x")
+        ctk.CTkLabel(self.ai_list_container, text="Loading…", font=theme.body(),
+                     text_color=theme.TEXT_MUTED).pack(pady=20)
+
         self.reload()
 
     def reload(self):
@@ -54,7 +67,12 @@ class ActivityLogsView(ctk.CTkFrame):
             logs = self.app.api.list_logs()
         except ApiError:
             logs = []
+        try:
+            ai_chats = self.app.api.list_ai_chat_logs()
+        except ApiError:
+            ai_chats = []
         self.after(0, lambda: self._render(logs))
+        self.after(0, lambda: self._render_ai_chats(ai_chats))
 
     def _render(self, logs):
         if not self.winfo_exists():
@@ -94,3 +112,37 @@ class ActivityLogsView(ctk.CTkFrame):
             for text in (member, device, started, duration, end_reason):
                 ctk.CTkLabel(inner, text=text, font=theme.small(), text_color=theme.TEXT,
                              width=150, anchor="w").pack(side="left", padx=(0, 10))
+
+    def _render_ai_chats(self, chats):
+        if not self.winfo_exists():
+            return
+        for child in self.ai_list_container.winfo_children():
+            child.destroy()
+
+        if not chats:
+            ctk.CTkLabel(self.ai_list_container, text="No AI Assistant questions asked yet.",
+                         font=theme.body(), text_color=theme.TEXT_MUTED).pack(pady=20)
+            return
+
+        for chat in chats:
+            row = ctk.CTkFrame(self.ai_list_container, fg_color=theme.CARD, corner_radius=8)
+            row.pack(fill="x", pady=4)
+            inner = ctk.CTkFrame(row, fg_color="transparent")
+            inner.pack(fill="x", padx=16, pady=12)
+
+            member = chat.get("member_username") or "—"
+            when = (chat.get("created_at") or "")[:16].replace("T", " ") or "—"
+            top_row = ctk.CTkFrame(inner, fg_color="transparent")
+            top_row.pack(fill="x")
+            ctk.CTkLabel(top_row, text=member, font=theme.small(), text_color=theme.TEXT_MUTED
+                         ).pack(side="left")
+            ctk.CTkLabel(top_row, text=when, font=theme.small(), text_color=theme.TEXT_MUTED
+                         ).pack(side="right")
+
+            question_prefix = "Q: 📷 " if chat.get("has_image") else "Q: "
+            ctk.CTkLabel(inner, text=f"{question_prefix}{chat.get('question', '')}", font=theme.body(),
+                         text_color=theme.TEXT, wraplength=900, justify="left"
+                         ).pack(anchor="w", pady=(8, 2))
+            ctk.CTkLabel(inner, text=f"A: {chat.get('answer', '')}", font=theme.body(),
+                         text_color=theme.TEXT_MUTED, wraplength=900, justify="left"
+                         ).pack(anchor="w")

@@ -49,6 +49,10 @@ def init_db():
     # sessions/devices use their natural key (token / device_id) as _id, already unique.
     # Supports count_sessions_today's per-org, per-day range query below.
     db.session_logs.create_index([("org_id", ASCENDING), ("started_at", ASCENDING)])
+    # Same shape as session_logs above -- list_ai_chat_logs queries by org_id and
+    # sorts by created_at on every load of the admin's AI Assistant Conversations
+    # view, same as the activity log does for sessions.
+    db.ai_chat_logs.create_index([("org_id", ASCENDING), ("created_at", ASCENDING)])
     # One-time migration: earlier versions stored the prepaid balance as
     # "balance_minutes" (a flat minute count). Billing is now rate-based (rupees per
     # minute beyond a free window -- see plan.py), so it's renamed to "balance_rupees".
@@ -197,7 +201,7 @@ def record_interview_usage(org_id, minutes_used):
 
 def refund_ai_usage(org_id, cost_cents):
     """Undoes record_ai_usage when a charged question then fails to actually get
-    answered (the OpenAI call itself errors out) -- reverses all three fields it
+    answered (the Groq call itself errors out) -- reverses all three fields it
     touched, not just the balance, so ai_questions_asked/ai_cost_cents keep meaning
     "questions actually answered" rather than "questions attempted"."""
     _get_db().users.update_one(
@@ -210,6 +214,30 @@ def add_balance(org_id, cents):
     """Credits a prepaid balance -- USD cents (see config.PREPAID_RATE_PER_HOUR_CENTS
     and the webhook in app.py, the only real caller: a Stripe payment confirmed)."""
     _get_db().users.update_one({"_id": org_id}, {"$inc": {"balance_cents": cents}})
+
+
+def log_ai_chat(org_id, member_username, question, answer, image_base64=None):
+    """One row per answered AI Assistant question -- lets the org admin see what
+    their team is actually asking the AI (see app.py's ai_chat/list endpoints).
+    Only ever called after a question has been successfully charged AND answered
+    (see record_ai_usage) -- a refused or refunded question never appears here.
+    image_base64 (when the question included a pasted screenshot) is stored
+    alongside it, same as the text, so the admin log is a complete record of what
+    was actually asked -- not just a note that an image existed."""
+    _get_db().ai_chat_logs.insert_one({
+        "org_id": org_id,
+        "member_username": member_username,
+        "question": question,
+        "answer": answer,
+        "image_base64": image_base64,
+        "created_at": now_iso(),
+    })
+
+
+def list_ai_chat_logs(org_id, limit=200):
+    """Full AI Assistant conversation history for this org, most recent first."""
+    docs = _get_db().ai_chat_logs.find({"org_id": org_id}).sort("created_at", DESCENDING).limit(limit)
+    return list(docs)
 
 
 def record_session_usage(org_id, minutes_used, free_minutes=0, rate_per_hour=1):

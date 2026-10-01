@@ -1,4 +1,5 @@
 import threading
+from tkinter import messagebox
 import customtkinter as ctk
 
 import theme
@@ -127,7 +128,7 @@ class UsersView(ctk.CTkFrame):
             ai_var = ctk.BooleanVar(value=bool(u.get("ai_allowed")))
             ctk.CTkSwitch(inner, text="AI Assist", variable=ai_var, onvalue=True, offvalue=False,
                           progress_color=theme.ACCENT, font=theme.small(), text_color=theme.TEXT_MUTED,
-                          command=lambda mid=u["member_id"], var=ai_var: self._set_ai_allowed(mid, var.get())
+                          command=lambda mid=u["member_id"], var=ai_var: self._on_ai_toggle(mid, var)
                           ).pack(side="right", padx=(0, 16))
 
     def _do_add(self):
@@ -148,7 +149,10 @@ class UsersView(ctk.CTkFrame):
             self.app.api.create_user(username, password)
             self.after(0, self._add_done)
         except ApiError as e:
-            self.after(0, lambda: self._add_failed(str(e)))
+            # See login_view.py's _do_login for why this can't read `e` directly
+            # inside the lambda -- it's deleted by the time .after() runs it.
+            message = str(e)
+            self.after(0, lambda: self._add_failed(message))
 
     def _add_done(self):
         if not self.winfo_exists():
@@ -173,6 +177,21 @@ class UsersView(ctk.CTkFrame):
         except ApiError:
             pass
         self.reload()
+
+    def _on_ai_toggle(self, member_id, var):
+        # Only confirmed going ON -- turning access back off never costs anything,
+        # so there's nothing to warn about there.
+        if var.get():
+            cost = self.app.api.ai_cost_per_question_cents / 100
+            image_cost = self.app.api.ai_image_cost_per_question_cents / 100
+            if not messagebox.askokcancel(
+                "Turn On AI Assist",
+                f"This will cost ${cost:.2f} per question this member asks the AI "
+                f"Assistant (${image_cost:.2f} for a question that includes a pasted "
+                "screenshot), charged to your organization's balance. Turn this on?"):
+                var.set(False)
+                return
+        self._set_ai_allowed(member_id, var.get())
 
     def _set_ai_allowed(self, member_id, allowed):
         threading.Thread(target=self._do_set_ai_allowed, args=(member_id, allowed), daemon=True).start()

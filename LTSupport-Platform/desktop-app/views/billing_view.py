@@ -298,7 +298,10 @@ class BillingView(ctk.CTkFrame):
             checkout_url = self.app.api.create_checkout()
             self.after(0, lambda: self._checkout_opened(checkout_url))
         except ApiError as e:
-            self.after(0, lambda: self._buy_failed(str(e)))
+            # See login_view.py's _do_login for why this can't read `e` directly
+            # inside the lambda -- it's deleted by the time .after() runs it.
+            message = str(e)
+            self.after(0, lambda: self._buy_failed(message))
 
     def _checkout_opened(self, checkout_url):
         if not self.winfo_exists():

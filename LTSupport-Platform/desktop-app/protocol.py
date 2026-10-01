@@ -1,6 +1,9 @@
 import struct
 import json
 import socket
+import ssl
+
+import config
 
 TYPE_HOST_HELLO = 1
 TYPE_VIEWER_HELLO = 2
@@ -24,6 +27,30 @@ TYPE_VIEWER_CLOSING = 15
 
 HEADER_FMT = ">BI"
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
+
+_TLS_CONTEXT = None
+
+
+def connect_relay_socket(timeout):
+    """One connected socket to config.RELAY_HOST/RELAY_PORT, TLS-wrapped first if
+    config.RELAY_USE_TLS -- shared by host_agent.py and viewer_agent.py so the two
+    don't each reimplement the same connect-then-maybe-wrap sequence. Raises the
+    same exceptions a plain socket.connect()/wrap_socket() would (timeout,
+    ConnectionRefusedError, ssl.SSLError, ...) -- both call sites already wrap
+    their whole connect attempt in a broad try/except, same as before this
+    existed, so nothing there needed to change for this.
+    create_default_context() trusts the OS/Python's normal public CA bundle, which
+    already covers a real Let's Encrypt cert (what the relay actually uses) with no
+    extra setup -- there's no private/self-signed CA to pin here."""
+    global _TLS_CONTEXT
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    sock.connect((config.RELAY_HOST, config.RELAY_PORT))
+    if config.RELAY_USE_TLS:
+        if _TLS_CONTEXT is None:
+            _TLS_CONTEXT = ssl.create_default_context()
+        sock = _TLS_CONTEXT.wrap_socket(sock, server_hostname=config.RELAY_HOST)
+    return sock
 
 
 def encode_frame(msg_type, payload=b""):

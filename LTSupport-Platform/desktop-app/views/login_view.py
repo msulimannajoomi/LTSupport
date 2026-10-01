@@ -170,7 +170,13 @@ class LoginView(ctk.CTkFrame):
                 self.app.api.login(org_id, password)
             self.after(0, self.app.show_dashboard)
         except ApiError as e:
-            self.after(0, lambda: self._fail(str(e)))
+            # Captured into a plain local, not read inside the lambda itself --
+            # Python deletes `e` the moment this except block exits, but .after()
+            # only runs the lambda later, once Tk gets to it; reading `e` there
+            # dies with "cannot access free variable 'e'" instead of ever showing
+            # the real error.
+            message = str(e)
+            self.after(0, lambda: self._fail(message))
 
     def _fail(self, message):
         # Reached via self.after() from a background thread (_do_login) -- the user can

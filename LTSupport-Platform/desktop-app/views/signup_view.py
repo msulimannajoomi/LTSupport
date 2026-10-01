@@ -97,7 +97,10 @@ class SignupView(ctk.CTkFrame):
             org_id = self.app.api.signup(org_name, email, phone, password)
             self.after(0, lambda: self._success(org_id))
         except ApiError as e:
-            self.after(0, lambda: self._fail(str(e)))
+            # See login_view.py's _do_login for why this can't read `e` directly
+            # inside the lambda -- it's deleted by the time .after() runs it.
+            message = str(e)
+            self.after(0, lambda: self._fail(message))
 
     def _success(self, org_id):
         show_copyable_id(

@@ -3,6 +3,7 @@ import datetime
 import json
 import re
 import smtplib
+import time
 from email.mime.text import MIMEText
 
 import requests
@@ -110,6 +111,10 @@ class SetMemberAiPayload(BaseModel):
 class AiChatMessage(BaseModel):
     role: str  # "user" or "assistant" -- never "system", the caller doesn't set that
     content: str
+    # Present only on a turn where the person pasted a screenshot alongside their
+    # question (see views/ai_assist_dialog.py) -- raw PNG bytes, base64-encoded.
+    # None for every plain-text turn, which is most of them.
+    image_base64: str | None = None
 
 
 class AiChatPayload(BaseModel):
@@ -145,6 +150,12 @@ def _account_view(user, token=None):
         "role": user.get("role", "admin"),
         "ai_questions_asked": user.get("ai_questions_asked", 0),
         "ai_cost_cents": user.get("ai_cost_cents", 0),
+        # The per-question rate itself (not the org's running total above) -- sent
+        # so the Users screen can show the real configured price in its "turn this
+        # on?" confirmation instead of a client-side guess that could drift out of
+        # sync with config.AI_ASSISTANT_COST_CENTS_PER_QUESTION.
+        "ai_cost_per_question_cents": config.AI_ASSISTANT_COST_CENTS_PER_QUESTION,
+        "ai_image_cost_per_question_cents": config.AI_ASSISTANT_IMAGE_COST_CENTS_PER_QUESTION,
         # The raw org-level "special subscription" switch (see manage.py's
         # ai-enable/ai-disable) -- distinct from ai_assistant_available below, which
         # also folds in role/trial/per-member checks that don't apply to what an
@@ -638,19 +649,20 @@ AI_SYSTEM_PROMPT = (
 def ai_transcribe(audio: UploadFile = File(...), authorization: str = Header(default="")):
     """Transcribes a short voice recording for the AI Assistant dialog (see
     views/ai_assist_view.py) -- a separate endpoint from /api/speech/transcribe
-    (Groq, used by the overlay's own mic button) since this one is gated by
+    (used by the overlay's own mic button) since this one is gated by
     _require_ai_assistant and deliberately does NOT charge anything on its own;
     only /api/ai/chat (the actual answered question) does -- see its own
-    docstring for why."""
+    docstring for why. Same Groq Whisper model/key as /api/speech/transcribe,
+    just under this feature's own gate."""
     user = _auth_user(authorization)
     _require_ai_assistant(user)
     audio_bytes = audio.file.read()
     try:
         resp = requests.post(
-            "https://api.openai.com/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}"},
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {config.GROQ_API_KEY}"},
             files={"file": (audio.filename or "speech.wav", audio_bytes, audio.content_type or "audio/wav")},
-            data={"model": config.OPENAI_TRANSCRIBE_MODEL, "language": "en", "response_format": "json"},
+            data={"model": config.GROQ_WHISPER_MODEL, "language": "en", "response_format": "json"},
             timeout=20,
         )
     except requests.RequestException:
@@ -660,6 +672,60 @@ def ai_transcribe(audio: UploadFile = File(...), authorization: str = Header(def
     return {"text": resp.json().get("text", "").strip()}
 
 
+def _groq_chat(messages):
+    """Plain-text questions only -- Groq's chat models here have no image input at
+    all. Used whenever the conversation has no pasted screenshot in it, since it's
+    faster and keeps Gemini's (separately rate-limited) free tier free for the
+    questions that actually need vision."""
+    body = [{"role": "system", "content": AI_SYSTEM_PROMPT}]
+    body += [{"role": m.role, "content": m.content} for m in messages]
+    resp = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {config.GROQ_API_KEY}"},
+        json={"model": config.GROQ_CHAT_MODEL, "messages": body, "temperature": 0.4},
+        timeout=30,
+    )
+    if resp.status_code >= 400:
+        raise requests.RequestException(f"Groq returned {resp.status_code}")
+    return resp.json()["choices"][0]["message"]["content"].strip()
+
+
+def _gemini_chat(messages):
+    """Used for the rest of a conversation once ANY turn in it included a pasted
+    screenshot -- not just the turn with the image itself, so a follow-up question
+    about that same screenshot still has it in context (the whole history is
+    resent every call, same reasoning as the module-level AiChatPayload docstring).
+    Gemini's request/response shape is its own, not OpenAI-compatible like Groq's,
+    hence a separate function rather than branching inside one."""
+    contents = []
+    for m in messages:
+        parts = [{"text": m.content}] if m.content else []
+        if m.image_base64:
+            parts.append({"inline_data": {"mime_type": "image/png", "data": m.image_base64}})
+        contents.append({"role": "model" if m.role == "assistant" else "user", "parts": parts})
+    body = {"contents": contents, "system_instruction": {"parts": [{"text": AI_SYSTEM_PROMPT}]}}
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{config.GEMINI_VISION_MODEL}:generateContent?key={config.GEMINI_API_KEY}")
+    # Retries on a 503 specifically -- seen directly in testing to be a real,
+    # "model is experiencing high demand" response from Gemini's own side, not a
+    # sign anything here is wrong, but also seen to last longer than one quick
+    # retry covers (sustained minutes-long spikes, not just an isolated blip) --
+    # hence 3 attempts with a growing wait rather than just one. Nothing else
+    # retries: a 4xx means this exact request won't succeed no matter how many
+    # times it's repeated.
+    backoffs = [2, 4]
+    for attempt in range(3):
+        resp = requests.post(url, json=body, timeout=30)
+        if resp.status_code == 503 and attempt < len(backoffs):
+            time.sleep(backoffs[attempt])
+            continue
+        break
+    if resp.status_code >= 400:
+        raise requests.RequestException(f"Gemini returned {resp.status_code}")
+    parts = resp.json()["candidates"][0]["content"]["parts"]
+    return "".join(p.get("text", "") for p in parts).strip()
+
+
 @app.post("/api/ai/chat")
 def ai_chat(payload: AiChatPayload, authorization: str = Header(default="")):
     """The AI Assistant's actual answered question -- transcription (above) and this
@@ -667,32 +733,31 @@ def ai_chat(payload: AiChatPayload, authorization: str = Header(default="")):
     there) since a transcription with no follow-up question was never actually
     "answered by AI" at all. Charges AI_ASSISTANT_COST_CENTS_PER_QUESTION from the
     org's existing prepaid balance -- same pool as session time -- BEFORE calling
-    OpenAI, so a request that can't be billed never runs up real OpenAI cost for
-    nothing; refunded back if the OpenAI call itself then fails."""
+    the AI provider, so a request that can't be billed never runs up usage for
+    nothing; refunded back if that call itself then fails."""
     user = _auth_user(authorization)
     _require_ai_assistant(user)
     if not payload.messages:
         raise HTTPException(400, "No question to answer.")
 
-    cost = config.AI_ASSISTANT_COST_CENTS_PER_QUESTION
+    has_image = any(m.image_base64 for m in payload.messages)
+    cost = config.AI_ASSISTANT_IMAGE_COST_CENTS_PER_QUESTION if has_image else config.AI_ASSISTANT_COST_CENTS_PER_QUESTION
     if not db.record_ai_usage(user["org_id"], cost):
         raise HTTPException(402, "Your balance is too low for another AI Assistant question.")
 
-    messages = [{"role": "system", "content": AI_SYSTEM_PROMPT}]
-    messages += [{"role": m.role, "content": m.content} for m in payload.messages]
     try:
-        resp = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}"},
-            json={"model": config.OPENAI_CHAT_MODEL, "messages": messages, "temperature": 0.4},
-            timeout=30,
-        )
-        if resp.status_code >= 400:
-            raise requests.RequestException(f"OpenAI returned {resp.status_code}")
-        reply = resp.json()["choices"][0]["message"]["content"].strip()
+        reply = _gemini_chat(payload.messages) if has_image else _groq_chat(payload.messages)
     except (requests.RequestException, KeyError, IndexError):
         db.refund_ai_usage(user["org_id"], cost)  # the question was never actually answered
         raise HTTPException(503, "AI Assistant could not answer right now. Please try again.")
+    # Logged only once actually answered and billed -- see log_ai_chat's own docstring
+    # for why a refused/refunded question never ends up here. The most recent real
+    # user turn is what was actually asked (and its image, if it had one); earlier
+    # turns are prior context already logged against their own replies.
+    last_user_msg = next((m for m in reversed(payload.messages) if m.role == "user"), None)
+    db.log_ai_chat(user["org_id"], user.get("member_username") or "admin",
+                   last_user_msg.content if last_user_msg else "", reply,
+                   image_base64=last_user_msg.image_base64 if last_user_msg else None)
     return {"reply": reply, "cost_cents": cost}
 
 
@@ -744,6 +809,25 @@ def list_logs(authorization: str = Header(default="")):
         "amount_charged": l.get("amount_charged", 0),
         "end_reason": l.get("end_reason", ""),
         "member_username": l.get("member_username"),
+    } for l in logs]}
+
+
+@app.get("/api/ai/chat-logs")
+def list_ai_chat_logs(authorization: str = Header(default="")):
+    """Admin-only -- what the org's team has actually been asking the AI Assistant
+    (see db.log_ai_chat). Same admin-visibility model as /api/logs above, just for
+    AI conversations instead of remote-support sessions."""
+    user = _auth_user(authorization)
+    _require_admin(user)
+    logs = db.list_ai_chat_logs(user["org_id"])
+    return {"logs": [{
+        "member_username": l.get("member_username", ""),
+        "question": l.get("question", ""),
+        "answer": l.get("answer", ""),
+        # The image itself isn't sent here -- just whether there was one, so this
+        # listing stays small even once it's full of screenshot-backed questions.
+        "has_image": bool(l.get("image_base64")),
+        "created_at": l.get("created_at", ""),
     } for l in logs]}
 
 
